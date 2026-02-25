@@ -1,0 +1,48 @@
+services:
+  shopee-dashboard:
+    build: .
+    container_name: shopee-dashboard
+    ports:
+      - "8501:8501"
+    volumes:
+      # Mount data directories - update these paths for your system
+      - ./processed_data:/app/processed_data
+      - ./Shopee_orders:/app/Shopee_orders:ro
+      - ./Shopee_Ad:/app/Shopee_Ad:ro
+      - ./Shopee_Live:/app/Shopee_Live:ro
+      - ./Shopee_Video:/app/Shopee_Video:ro
+      - ./Tiktok Live:/app/Tiktok_Live:ro
+      - ./Tiktok Video:/app/Tiktok_Video:ro
+    restart: unless-stopped
+    environment:
+      - TZ=Asia/Bangkok
+      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8501/_stcore/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+  content-dashboard:
+    build: .
+    container_name: content-dashboard
+    ports:
+      - "8502:8501"
+    volumes:
+      - ./processed_data:/app/processed_data
+      - ./Tiktok Live:/app/Tiktok_Live:ro
+      - ./Tiktok Video:/app/Tiktok_Video:ro
+      - ./Shopee Live:/app/Shopee_Live:ro
+      - ./Shopee Video:/app/Shopee_Video:ro
+    command: ["python", "-m", "streamlit", "run", "dashboard_content.py", "--server.address", "0.0.0.0", "--server.port", "8501"]
+    restart: unless-stopped
+    environment:
+      - TZ=Asia/Bangkok
+      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8501/_stcore/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s

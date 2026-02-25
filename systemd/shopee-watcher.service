@@ -1,0 +1,21 @@
+[Unit]
+Description=Shopee Dashboard File Watcher
+After=network.target
+
+[Service]
+Type=simple
+User=tk578
+WorkingDirectory=/home/tk578/Shopee-dashboard
+Environment=HOME=/home/tk578
+
+ExecStart=/home/tk578/Shopee-dashboard/scripts/start_watcher.sh
+
+Restart=always
+RestartSec=10
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=shopee-watcher
+
+[Install]
+WantedBy=multi-user.target
