@@ -1159,10 +1159,21 @@ def clean_line_orders(df):
     # Rename columns
     df = df.rename(columns=LINE_ORDER_COLUMN_MAP)
 
+    # Remove summary/total rows (rows without valid Order_ID or Customer_Type)
+    # Excel exports often have a "Total" row at the bottom
+    df = df.dropna(subset=['Order_ID'])
+    if 'Customer_Type' in df.columns:
+        df = df[df['Customer_Type'].notna()]
+    print(f"   After removing summary rows: {len(df)} records")
+
     # Parse dates
     if 'Order_Date' in df.columns:
         df['Order_Date'] = pd.to_datetime(df['Order_Date'], errors='coerce')
         df['Order_Date_Only'] = df['Order_Date'].dt.date
+
+    # Remove rows with invalid dates
+    df = df[df['Order_Date'].notna()]
+    print(f"   After removing invalid dates: {len(df)} records")
 
     # Convert numeric columns
     numeric_cols = ['Net_Sales', 'VAT', 'Total_Amount']
@@ -1177,7 +1188,7 @@ def clean_line_orders(df):
     df['Return_Qty'] = 0
     df['Total_Discount'] = 0
     df['Total_Fees'] = 0
-    df['True_Net_Revenue'] = df.get('Net_Sales', 0)
+    df['True_Net_Revenue'] = df['Net_Sales'].copy()
     df['Commission'] = 0
     df['Transaction_Fee'] = 0
     df['Service_Fee'] = 0
@@ -1195,6 +1206,7 @@ def clean_line_orders(df):
     df['Platform'] = 'Line'
 
     print(f"   Final: {len(df)} cleaned Line/Direct sales records")
+    print(f"   Total GMV: ฿{df['Net_Sales'].sum():,.2f}")
     return df
 
 
