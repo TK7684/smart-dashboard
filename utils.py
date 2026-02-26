@@ -115,6 +115,33 @@ def load_tiktok_video():
     except:
         return pd.DataFrame()
 
+def load_tiktok_orders():
+    """Load TikTok Orders data"""
+    try:
+        return conn.execute("SELECT * FROM tiktok_orders").fetchdf()
+    except:
+        return pd.DataFrame()
+
+def load_all_orders():
+    """Load combined orders from both Shopee and TikTok"""
+    try:
+        return conn.execute("SELECT * FROM all_orders").fetchdf()
+    except:
+        # Fallback: union manually if view doesn't exist
+        try:
+            shopee = conn.execute("SELECT * FROM orders_raw").fetchdf()
+            tiktok = conn.execute("SELECT * FROM tiktok_orders").fetchdf()
+            return pd.concat([shopee, tiktok], ignore_index=True)
+        except:
+            return pd.DataFrame()
+
+def load_line_orders():
+    """Load Line/Direct sales data"""
+    try:
+        return conn.execute("SELECT * FROM line_orders").fetchdf()
+    except:
+        return pd.DataFrame()
+
 # Common CSS styles
 COMMON_STYLES = """
 <style>

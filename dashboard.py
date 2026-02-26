@@ -1,10 +1,10 @@
 """
-Shopee Executive Dashboard
+E-Commerce Executive Dashboard
 ===========================
-Streamlit dashboard with DuckDB for fast SQL queries
-Light theme, minimal style, optimized for sharing
+Multi-platform dashboard with DuckDB for fast SQL queries
+Supports Shopee, TikTok, and Line platforms
 
-Run: streamlit run dashboard.py --server.address 100.66.69.21
+Run: streamlit run dashboard.py --server.address 0.0.0.0
 """
 
 import streamlit as st
@@ -18,10 +18,27 @@ from plotly.subplots import make_subplots
 from datetime import datetime, timedelta
 
 # ==========================================
+# PLATFORM CONFIGURATION
+# ==========================================
+PLATFORM_COLORS = {
+    'Shopee': '#ee4d2d',
+    'TikTok': '#000000',
+    'Line': '#00b900',
+    'All': '#6366f1',
+}
+
+PLATFORM_ICONS = {
+    'Shopee': '🛒',
+    'TikTok': '🎵',
+    'Line': '💬',
+    'All': '🏠',
+}
+
+# ==========================================
 # CONFIGURATION
 # ==========================================
 st.set_page_config(
-    page_title="Shopee Dashboard",
+    page_title="E-Commerce Dashboard",
     page_icon="📊",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -243,11 +260,42 @@ def load_video_data():
     except:
         return pd.DataFrame()
 
+@st.cache_data(ttl=300)
+def load_tiktok_orders():
+    """Load TikTok orders data"""
+    try:
+        return conn.execute("SELECT * FROM tiktok_orders").fetchdf()
+    except:
+        return pd.DataFrame()
+
+@st.cache_data(ttl=300)
+def load_all_orders():
+    """Load combined orders from all platforms"""
+    try:
+        return conn.execute("SELECT * FROM all_orders").fetchdf()
+    except:
+        # Fallback: union manually
+        try:
+            shopee = conn.execute("SELECT * FROM orders_raw").fetchdf()
+            tiktok = conn.execute("SELECT * FROM tiktok_orders").fetchdf()
+            line = conn.execute("SELECT * FROM line_orders").fetchdf()
+            return pd.concat([shopee, tiktok, line], ignore_index=True)
+        except:
+            return pd.DataFrame()
+
+@st.cache_data(ttl=300)
+def load_line_orders():
+    """Load Line/Direct sales data"""
+    try:
+        return conn.execute("SELECT * FROM line_orders").fetchdf()
+    except:
+        return pd.DataFrame()
+
 # ==========================================
 # SIDEBAR
 # ==========================================
 with st.sidebar:
-    st.markdown("### 📊 Shopee Dashboard")
+    st.markdown("### 📊 E-Commerce Dashboard")
     st.markdown("---")
 
     # Load data for date range
@@ -258,35 +306,57 @@ with st.sidebar:
     # Quick time range selection
     st.markdown("#### ⚡ Quick Select")
 
-    col1, col2 = st.columns(2)
+    col1, col2, col3 = st.columns(3)
 
     with col1:
         if st.button("Today", use_container_width=True):
             st.session_state.date_range = (max_date, max_date)
+            st.rerun()
         if st.button("This Week", use_container_width=True):
             st.session_state.date_range = (max_date - timedelta(days=7), max_date)
+            st.rerun()
         if st.button("Q1", use_container_width=True):
             q1_end = min(datetime(max_date.year, 3, 31).date(), max_date)
             st.session_state.date_range = (datetime(max_date.year, 1, 1).date(), q1_end)
+            st.rerun()
         if st.button("Q3", use_container_width=True):
             q3_start = max(datetime(max_date.year, 7, 1).date(), min_date)
             q3_end = min(datetime(max_date.year, 9, 30).date(), max_date)
             if q3_start <= q3_end:
                 st.session_state.date_range = (q3_start, q3_end)
+                st.rerun()
 
     with col2:
         if st.button("This Month", use_container_width=True):
             st.session_state.date_range = (datetime(max_date.year, max_date.month, 1).date(), max_date)
+            st.rerun()
         if st.button("This Year", use_container_width=True):
             st.session_state.date_range = (datetime(max_date.year, 1, 1).date(), max_date)
+            st.rerun()
         if st.button("Q2", use_container_width=True):
             q2_end = min(datetime(max_date.year, 6, 30).date(), max_date)
             st.session_state.date_range = (datetime(max_date.year, 4, 1).date(), q2_end)
+            st.rerun()
         if st.button("Q4", use_container_width=True):
             q4_start = max(datetime(max_date.year, 10, 1).date(), min_date)
             q4_end = max_date  # Always cap at max_date
             if q4_start <= q4_end:
                 st.session_state.date_range = (q4_start, q4_end)
+                st.rerun()
+
+    with col3:
+        if st.button("Last 30 Days", use_container_width=True):
+            st.session_state.date_range = (max_date - timedelta(days=30), max_date)
+            st.rerun()
+        if st.button("Last 90 Days", use_container_width=True):
+            st.session_state.date_range = (max_date - timedelta(days=90), max_date)
+            st.rerun()
+        if st.button("Last 12 Months", use_container_width=True):
+            st.session_state.date_range = (max_date - timedelta(days=365), max_date)
+            st.rerun()
+        if st.button("All Time", use_container_width=True, type="primary"):
+            st.session_state.date_range = (min_date, max_date)
+            st.rerun()
 
     st.markdown("---")
 
@@ -307,7 +377,34 @@ with st.sidebar:
     st.markdown("---")
 
     # Filters
-    st.markdown("#### 🔍 Filters")
+    st.markdown("#### 🔍 Platform")
+
+    # Visual platform selector using buttons
+    col1, col2, col3, col4 = st.columns(4)
+
+    with col1:
+        if st.button("🏠 All", use_container_width=True, type="primary" if st.session_state.get('platform', 'All') == 'All' else "secondary"):
+            st.session_state.platform = 'All'
+            st.rerun()
+    with col2:
+        if st.button("🛒 Shopee", use_container_width=True, type="primary" if st.session_state.get('platform', 'All') == 'Shopee' else "secondary"):
+            st.session_state.platform = 'Shopee'
+            st.rerun()
+    with col3:
+        if st.button("🎵 TikTok", use_container_width=True, type="primary" if st.session_state.get('platform', 'All') == 'TikTok' else "secondary"):
+            st.session_state.platform = 'TikTok'
+            st.rerun()
+    with col4:
+        if st.button("💬 Line", use_container_width=True, type="primary" if st.session_state.get('platform', 'All') == 'Line' else "secondary"):
+            st.session_state.platform = 'Line'
+            st.rerun()
+
+    platform_filter = st.session_state.get('platform', 'All')
+
+    st.markdown("---")
+
+    # Other filters
+    st.markdown("#### ⚙️ Options")
     show_ads = st.checkbox("Show Ads Data", value=False)
     show_geo = st.checkbox("Show Geographic", value=True)
 
@@ -332,12 +429,21 @@ with st.sidebar:
     st.page_link("pages/1_🎬_Content_Commerce.py", label="🎬 Content Commerce", icon="🎬")
 
 # ==========================================
-# FILTER DATA BY DATE RANGE
+# FILTER DATA BY DATE RANGE AND PLATFORM
 # ==========================================
 if len(date_range) == 2:
     start_date, end_date = date_range
 else:
     start_date = end_date = date_range[0]
+
+# Apply platform filter
+if platform_filter == "Shopee":
+    daily_df = daily_df[daily_df['Platform'] == 'Shopee']
+elif platform_filter == "TikTok":
+    daily_df = daily_df[daily_df['Platform'] == 'TikTok']
+elif platform_filter == "Line":
+    daily_df = daily_df[daily_df['Platform'] == 'Line']
+# else: "All" - no filter needed
 
 daily_df['Date'] = pd.to_datetime(daily_df['Date'])
 mask = (daily_df['Date'] >= pd.to_datetime(start_date)) & (daily_df['Date'] <= pd.to_datetime(end_date))
@@ -348,15 +454,23 @@ period_days = (end_date - start_date).days + 1
 prev_start = start_date - timedelta(days=period_days)
 prev_end = start_date - timedelta(days=1)
 
+# Check if previous period is valid (not before min_date)
+has_prev_period = prev_end >= min_date
+
 prev_mask = (daily_df['Date'] >= pd.to_datetime(prev_start)) & (daily_df['Date'] <= pd.to_datetime(prev_end))
 prev_daily = daily_df[prev_mask].copy()
 
 # ==========================================
 # HEADER
 # ==========================================
-st.markdown('<p class="main-header">Shopee GMV & Marketing Command Center</p>', unsafe_allow_html=True)
-st.markdown(f"**Period:** {start_date} to {end_date} | Compared to: {prev_start} to {prev_end}")
-st.caption(f"Dashboard v2.0 - Updated: 2026-02-24 11:30")
+st.markdown('<p class="main-header">E-Commerce GMV & Marketing Command Center</p>', unsafe_allow_html=True)
+
+# Show comparison info only if valid
+if has_prev_period and len(prev_daily) > 0:
+    st.markdown(f"**Period:** {start_date} to {end_date} | **Platform:** {platform_filter} | Compared to: {prev_start} to {prev_end}")
+else:
+    st.markdown(f"**Period:** {start_date} to {end_date} | **Platform:** {platform_filter}")
+st.caption(f"Dashboard v2.2 - Multi-Platform E-Commerce")
 
 # ==========================================
 # SECTION 1: HERO KPIs WITH COMPARISON
@@ -370,17 +484,29 @@ current_aov = filtered_daily['AOV'].mean() if len(filtered_daily) > 0 else 0
 current_revenue = filtered_daily['Net_Revenue'].sum()
 current_units = filtered_daily['Units_Sold'].sum()
 
-# Previous period metrics
-prev_gmv = prev_daily['GMV'].sum() if len(prev_daily) > 0 else 1
-prev_orders = prev_daily['Orders'].sum() if len(prev_daily) > 0 else 1
-prev_aov = prev_daily['AOV'].mean() if len(prev_daily) > 0 else 1
-prev_revenue = prev_daily['Net_Revenue'].sum() if len(prev_daily) > 0 else 1
+# Previous period metrics - only calculate if valid data exists
+if has_prev_period and len(prev_daily) > 0:
+    prev_gmv = prev_daily['GMV'].sum()
+    prev_orders = prev_daily['Orders'].sum()
+    prev_aov = prev_daily['AOV'].mean()
+    prev_revenue = prev_daily['Net_Revenue'].sum()
 
-# Calculate changes
-gmv_change = ((current_gmv - prev_gmv) / prev_gmv * 100) if prev_gmv > 0 else 0
-orders_change = ((current_orders - prev_orders) / prev_orders * 100) if prev_orders > 0 else 0
-aov_change = ((current_aov - prev_aov) / prev_aov * 100) if prev_aov > 0 else 0
-revenue_change = ((current_revenue - prev_revenue) / prev_revenue * 100) if prev_revenue > 0 else 0
+    # Calculate changes only if previous values are meaningful
+    gmv_change = ((current_gmv - prev_gmv) / prev_gmv * 100) if prev_gmv > 0 else None
+    orders_change = ((current_orders - prev_orders) / prev_orders * 100) if prev_orders > 0 else None
+    aov_change = ((current_aov - prev_aov) / prev_aov * 100) if prev_aov > 0 else None
+    revenue_change = ((current_revenue - prev_revenue) / prev_revenue * 100) if prev_revenue > 0 else None
+else:
+    gmv_change = None
+    orders_change = None
+    aov_change = None
+    revenue_change = None
+
+# Helper to format change
+def format_change(change):
+    if change is None:
+        return "No comparison"
+    return f"{change:+.1f}% vs prev"
 
 col1, col2, col3, col4, col5 = st.columns(5)
 
@@ -388,7 +514,7 @@ with col1:
     metric_with_tooltip(
         "💰 Total GMV",
         format_currency(current_gmv),
-        f"{gmv_change:+.1f}% vs prev",
+        format_change(gmv_change),
         "GMV (มูลค่าสินค้ารวม): ผลรวมยอดขายสุทธิจากคำสั่งซื้อทั้งหมดในช่วงเวลาที่เลือก ไม่รวมคำสั่งซื้อที่ยกเลิก"
     )
 
@@ -396,7 +522,7 @@ with col2:
     metric_with_tooltip(
         "📦 Total Orders",
         format_number(current_orders),
-        f"{orders_change:+.1f}% vs prev",
+        format_change(orders_change),
         "จำนวนคำสั่งซื้อที่ยืนยันแล้วในช่วงเวลาที่เลือก ไม่รวมคำสั่งซื้อที่ยกเลิกหรือส่งคืน"
     )
 
@@ -404,7 +530,7 @@ with col3:
     metric_with_tooltip(
         "💵 Average AOV",
         format_currency(current_aov),
-        f"{aov_change:+.1f}% vs prev",
+        format_change(aov_change),
         "AOV (มูลค่าเฉลี่ยต่อคำสั่งซื้อ): GMV ÷ จำนวนคำสั่งซื้อ แสดงขนาดตะกร้าซื้อเฉลี่ย"
     )
 
@@ -433,11 +559,78 @@ with col5:
     metric_with_tooltip(
         "🎯 Net Margin",
         f"{margin:.1f}%",
-        f"{revenue_change:+.1f}% vs prev",
+        format_change(revenue_change),
         "อัตรากำไรสุทธิ: รายได้สุทธิ ÷ GMV × 100 แสดงอัตรากำไรหลังหักค่าธรรมเนียมแพลตฟอร์มและส่วนลด"
     )
 
 st.markdown("---")
+
+# ==========================================
+# PLATFORM BREAKDOWN (only show when "All" is selected)
+# ==========================================
+if platform_filter == "All":
+    st.markdown('<p class="section-header">📊 Platform Breakdown</p>', unsafe_allow_html=True)
+
+    # Get platform-level metrics from daily_sales
+    platform_metrics = filtered_daily.groupby('Platform').agg({
+        'GMV': 'sum',
+        'Orders': 'sum',
+        'Net_Revenue': 'sum',
+        'Units_Sold': 'sum',
+        'Date': ['min', 'max', 'count']
+    }).reset_index()
+
+    # Flatten column names
+    platform_metrics.columns = ['Platform', 'GMV', 'Orders', 'Net_Revenue', 'Units_Sold', 'Min_Date', 'Max_Date', 'Days']
+
+    total_gmv_all = platform_metrics['GMV'].sum()
+
+    col1, col2, col3 = st.columns(3)
+
+    with col1:
+        st.markdown("**GMV by Platform**")
+        for _, row in platform_metrics.iterrows():
+            platform = row['Platform']
+            gmv = row['GMV']
+            pct = (gmv / total_gmv_all * 100) if total_gmv_all > 0 else 0
+            color = PLATFORM_COLORS.get(platform, '#666')
+            icon = PLATFORM_ICONS.get(platform, '📦')
+            # Format date range
+            min_dt = pd.to_datetime(row['Min_Date']).strftime('%Y-%m-%d')
+            max_dt = pd.to_datetime(row['Max_Date']).strftime('%Y-%m-%d')
+            st.markdown(f"<span style='color:{color}; font-weight:bold;'>{icon} {platform}</span>: {format_currency(gmv)} ({pct:.1f}%)", unsafe_allow_html=True)
+            st.caption(f"📅 {min_dt} to {max_dt} ({int(row['Days'])} days)")
+
+    with col2:
+        st.markdown("**Orders by Platform**")
+        total_orders_all = platform_metrics['Orders'].sum()
+        for _, row in platform_metrics.iterrows():
+            platform = row['Platform']
+            orders = row['Orders']
+            pct = (orders / total_orders_all * 100) if total_orders_all > 0 else 0
+            color = PLATFORM_COLORS.get(platform, '#666')
+            icon = PLATFORM_ICONS.get(platform, '📦')
+            st.markdown(f"<span style='color:{color}; font-weight:bold;'>{icon} {platform}</span>: {format_number(orders)} ({pct:.1f}%)", unsafe_allow_html=True)
+
+    with col3:
+        # Simple donut chart
+        fig = go.Figure(data=[go.Pie(
+            labels=platform_metrics['Platform'],
+            values=platform_metrics['GMV'],
+            hole=0.6,
+            marker_colors=[PLATFORM_COLORS.get(p, '#666') for p in platform_metrics['Platform']],
+            textinfo='percent',
+            texttemplate='%{percent:.1%}',
+            hovertemplate='<b>%{label}</b><br>GMV: ฿%{value:,.0f}<extra></extra>'
+        )])
+        fig.update_layout(
+            height=200,
+            margin=dict(l=0, r=0, t=0, b=0),
+            showlegend=False
+        )
+        st.plotly_chart(fig, use_container_width=True)
+
+    st.markdown("---")
 
 # ==========================================
 # SECTION 2: SALES TRENDS
@@ -446,10 +639,21 @@ st.markdown('<p class="section-header">📊 Sales Trends</p>', unsafe_allow_html
 st.caption("แนวโน้มยอดขายรายวันและการกระจายสินค้าตามช่วงเวลาที่เลือก")
 
 # Load products for segment distribution (time-filtered)
-orders_raw_df = load_orders_raw()
+# Use combined orders from both Shopee and TikTok
+orders_raw_df = load_all_orders()
+if orders_raw_df.empty:
+    orders_raw_df = load_orders_raw()  # Fallback to Shopee only
+
 if not orders_raw_df.empty and 'Order_Date' in orders_raw_df.columns:
     orders_raw_df['Order_Date'] = pd.to_datetime(orders_raw_df['Order_Date'])
     orders_mask = (orders_raw_df['Order_Date'] >= pd.to_datetime(start_date)) & (orders_raw_df['Order_Date'] <= pd.to_datetime(end_date))
+
+    # Apply platform filter if needed
+    if platform_filter == "Shopee Only":
+        orders_mask = orders_mask & (orders_raw_df['Platform'] == 'Shopee')
+    elif platform_filter == "TikTok Only":
+        orders_mask = orders_mask & (orders_raw_df['Platform'] == 'TikTok')
+
     filtered_orders = orders_raw_df[orders_mask]
 
     if len(filtered_orders) > 0:
@@ -780,6 +984,13 @@ if show_geo:
         # Filter by selected date range
         daily_geo_df['Date'] = pd.to_datetime(daily_geo_df['Date'])
         geo_mask = (daily_geo_df['Date'] >= pd.to_datetime(start_date)) & (daily_geo_df['Date'] <= pd.to_datetime(end_date))
+
+        # Apply platform filter if needed
+        if platform_filter == "Shopee Only" and 'Platform' in daily_geo_df.columns:
+            geo_mask = geo_mask & (daily_geo_df['Platform'] == 'Shopee')
+        elif platform_filter == "TikTok Only" and 'Platform' in daily_geo_df.columns:
+            geo_mask = geo_mask & (daily_geo_df['Platform'] == 'TikTok')
+
         filtered_geo = daily_geo_df[geo_mask]
 
         # Aggregate by province (Units_Sold is the correct column name)

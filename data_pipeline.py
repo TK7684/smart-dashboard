@@ -47,6 +47,8 @@ LIVE_DIR = get_source_dir("Shopee Live")
 VIDEO_DIR = get_source_dir("Shopee Video")
 TIKTOK_LIVE_DIR = get_source_dir("Tiktok Live")
 TIKTOK_VIDEO_DIR = get_source_dir("Tiktok Video")
+TIKTOK_ORDERS_DIR = get_source_dir("Tiktok orders")
+LINE_ORDERS_DIR = get_source_dir("Facebook and Line")
 
 # Create output directory
 OUTPUT_DIR.mkdir(exist_ok=True)
@@ -162,6 +164,60 @@ TIKTOK_VIDEO_ALT_COLUMN_MAP = {
     'GMV ของการคืนเงินจากแอฟฟิลิเอต': 'Refund_GMV',
     'ความคิดเห็นในวิดีโอขายสินค้า': 'Comments',
     'การกดถูกใจในวิดีโอขายสินค้า': 'Likes',
+}
+
+# TikTok Orders column mapping (standardize English names)
+TIKTOK_ORDER_COLUMN_MAP = {
+    'Order ID': 'Order_ID',
+    'Order Status': 'Order_Status',
+    'Order Substatus': 'Order_Substatus',
+    'Normal or Pre-order': 'Order_Type',
+    'SKU ID': 'SKU_ID',
+    'Seller SKU': 'SKU',
+    'Product Name': 'Product_Name',
+    'Variation': 'Variation',
+    'Quantity': 'Quantity',
+    'Sku Quantity of return': 'Return_Qty',
+    'SKU Unit Original Price': 'Original_Price',
+    'SKU Subtotal Before Discount': 'Gross_Sales',
+    'SKU Platform Discount': 'Platform_Discount',
+    'SKU Seller Discount': 'Seller_Discount',
+    'SKU Subtotal After Discount': 'Net_Sales',
+    'Shipping Fee After Discount': 'Shipping_Fee',
+    'Original Shipping Fee': 'Original_Shipping',
+    'Order Amount': 'Order_Amount',
+    'Order Refund Amount': 'Refund_Amount',
+    'Created Time': 'Order_Date',
+    'Paid Time': 'Paid_Time',
+    'Delivered Time': 'Delivered_Time',
+    'Cancelled Time': 'Cancelled_Time',
+    'Province': 'Province',
+    'District': 'District',
+    'Buyer Username': 'Buyer_Username',
+    'Payment Method': 'Payment_Method',
+    'Package ID': 'Package_ID',
+    'Weight(kg)': 'Weight',
+}
+
+# Valid TikTok order statuses (Thai) - include "Completed" which is the most common
+TIKTOK_VALID_STATUSES = [
+    'เสร็จสมบูรณ์',      # Completed (most common - ~1M records)
+    'ที่จะจัดส่ง',       # Ready to ship
+    'จัดส่งแล้ว',        # Shipped
+    'ส่งสำเร็จ',        # Delivered
+    'พร้อมจัดส่ง',       # Ready to ship (alt)
+    'รอการชำระเงิน',    # Waiting for payment
+    'กำลังจัดส่ง',       # In transit
+]
+
+# Line Orders column mapping (Thai to English)
+LINE_ORDER_COLUMN_MAP = {
+    'เลขที่เอกสาร': 'Order_ID',
+    'วัน/เดือน/ปี': 'Order_Date',
+    'ชื่อลูกค้า': 'Customer_Type',
+    'มูลค่า': 'Net_Sales',
+    'ภาษีมูลค่าเพิ่ม': 'VAT',
+    'ยอดรวมสุทธิ': 'Total_Amount',
 }
 
 
@@ -525,6 +581,53 @@ def load_tiktok_video():
 
     combined = pd.concat(all_video, ignore_index=True)
     print(f"   Total: {len(combined)} TikTok video records")
+    return combined
+
+
+def load_tiktok_orders():
+    """Load and combine all TikTok order files"""
+    print("\n📦 Loading TikTok Order Data...")
+    all_orders = []
+    files = get_all_files(TIKTOK_ORDERS_DIR, 'csv')
+
+    for file in files:
+        try:
+            # Read CSV with encoding handling (large files need low_memory=False)
+            df = pd.read_csv(file, encoding='utf-8', low_memory=False)
+            df['File_Source'] = file.name
+            all_orders.append(df)
+            print(f"   ✓ {file.name}: {len(df)} records")
+        except Exception as e:
+            print(f"   ✗ Error loading {file.name}: {e}")
+
+    if not all_orders:
+        return pd.DataFrame()
+
+    combined = pd.concat(all_orders, ignore_index=True)
+    print(f"   Total: {len(combined)} TikTok order records")
+    return combined
+
+
+def load_line_orders():
+    """Load Line/Facebook sales data from Excel"""
+    print("\n💬 Loading Line/Direct Sales Data...")
+    all_orders = []
+    files = get_all_files(LINE_ORDERS_DIR, 'xlsx')
+
+    for file in files:
+        try:
+            df = pd.read_excel(file)
+            df['File_Source'] = file.name
+            all_orders.append(df)
+            print(f"   ✓ {file.name}: {len(df)} records")
+        except Exception as e:
+            print(f"   ✗ Error loading {file.name}: {e}")
+
+    if not all_orders:
+        return pd.DataFrame()
+
+    combined = pd.concat(all_orders, ignore_index=True)
+    print(f"   Total: {len(combined)} Line/Direct sales records")
     return combined
 
 
@@ -992,6 +1095,109 @@ def parse_tiktok_duration(value):
     return hours * 3600 + minutes * 60 + seconds
 
 
+def clean_tiktok_orders(df):
+    """Clean and transform TikTok order data"""
+    print("\n🧹 Cleaning TikTok Order Data...")
+
+    if df.empty:
+        return df
+
+    # Rename columns
+    df = df.rename(columns=TIKTOK_ORDER_COLUMN_MAP)
+
+    # Filter valid statuses
+    df = df[df['Order_Status'].isin(TIKTOK_VALID_STATUSES)]
+    print(f"   After status filter: {len(df)} records")
+
+    # Filter out non-skincare/supplement products
+    if 'Product_Name' in df.columns:
+        pattern = '|'.join(EXCLUDE_KEYWORDS)
+        mask = ~df['Product_Name'].str.lower().str.contains(pattern, na=False)
+        df = df[mask]
+        print(f"   After product filter: {len(df)} records")
+
+    # Parse dates (format: "19/02/2026 09:10:25\t" - with tab character)
+    if 'Order_Date' in df.columns:
+        # Strip whitespace and tab characters
+        df['Order_Date'] = df['Order_Date'].astype(str).str.strip().str.replace('\t', '')
+        df['Order_Date'] = pd.to_datetime(df['Order_Date'], format='%d/%m/%Y %H:%M:%S', errors='coerce')
+        df['Order_Date_Only'] = df['Order_Date'].dt.date
+
+    # Convert numeric columns
+    numeric_cols = ['Quantity', 'Return_Qty', 'Original_Price', 'Gross_Sales',
+                    'Platform_Discount', 'Seller_Discount', 'Net_Sales',
+                    'Shipping_Fee', 'Order_Amount', 'Refund_Amount', 'Weight']
+
+    for col in numeric_cols:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
+        else:
+            df[col] = 0
+
+    # Calculate derived fields
+    df['Total_Discount'] = df.get('Platform_Discount', 0) + df.get('Seller_Discount', 0)
+    df['Total_Fees'] = 0  # TikTok doesn't provide fee breakdown in order export
+    df['True_Net_Revenue'] = df.get('Net_Sales', 0)
+    df['Commission'] = 0
+    df['Transaction_Fee'] = 0
+    df['Service_Fee'] = 0
+
+    # Add platform identifier
+    df['Platform'] = 'TikTok'
+
+    print(f"   Final: {len(df)} cleaned TikTok order records")
+    return df
+
+
+def clean_line_orders(df):
+    """Clean and transform Line/Direct sales data"""
+    print("\n🧹 Cleaning Line/Direct Sales Data...")
+
+    if df.empty:
+        return df
+
+    # Rename columns
+    df = df.rename(columns=LINE_ORDER_COLUMN_MAP)
+
+    # Parse dates
+    if 'Order_Date' in df.columns:
+        df['Order_Date'] = pd.to_datetime(df['Order_Date'], errors='coerce')
+        df['Order_Date_Only'] = df['Order_Date'].dt.date
+
+    # Convert numeric columns
+    numeric_cols = ['Net_Sales', 'VAT', 'Total_Amount']
+    for col in numeric_cols:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
+        else:
+            df[col] = 0
+
+    # Add missing columns for consistency with other platforms
+    df['Quantity'] = 1  # Assume 1 item per transaction
+    df['Return_Qty'] = 0
+    df['Total_Discount'] = 0
+    df['Total_Fees'] = 0
+    df['True_Net_Revenue'] = df.get('Net_Sales', 0)
+    df['Commission'] = 0
+    df['Transaction_Fee'] = 0
+    df['Service_Fee'] = 0
+    df['Product_Name'] = 'Direct Sale'
+    df['SKU'] = 'N/A'
+    df['Province'] = 'Unknown'
+
+    # Determine platform from customer type
+    if 'Customer_Type' in df.columns:
+        df['Sales_Channel'] = df['Customer_Type']
+    else:
+        df['Sales_Channel'] = 'Direct'
+
+    # Add platform identifier
+    df['Platform'] = 'Line'
+
+    print(f"   Final: {len(df)} cleaned Line/Direct sales records")
+    return df
+
+
 # ==========================================
 # MASTER DATA AGGREGATION
 # ==========================================
@@ -1231,7 +1437,7 @@ def create_daily_geographic(orders_df):
 # DUCKDB SQL FUNCTIONS
 # ==========================================
 def create_duckdb_database(daily_df, product_df, ads_df, geo_df, orders_df, live_df=None, video_df=None, daily_geo_df=None,
-                           tiktok_live_df=None, tiktok_video_df=None):
+                           tiktok_live_df=None, tiktok_video_df=None, tiktok_orders_df=None, line_orders_df=None):
     """Create DuckDB database for fast SQL queries"""
     print("\n🗄️ Creating DuckDB Database...")
 
@@ -1282,6 +1488,26 @@ def create_duckdb_database(daily_df, product_df, ads_df, geo_df, orders_df, live
         conn.execute("CREATE OR REPLACE TABLE tiktok_video AS SELECT * FROM tiktok_video_df")
         print("   Added tiktok_video table")
 
+    # Add TikTok orders table
+    if tiktok_orders_df is not None and not tiktok_orders_df.empty:
+        # Select key columns for tiktok_orders to keep size manageable
+        key_cols = ['Order_ID', 'Order_Status', 'Order_Date', 'Product_Name',
+                    'SKU', 'Quantity', 'Net_Sales', 'True_Net_Revenue', 'Platform', 'Province']
+        available_cols = [c for c in key_cols if c in tiktok_orders_df.columns]
+        tiktok_orders_subset = tiktok_orders_df[available_cols].copy()
+        conn.execute("CREATE OR REPLACE TABLE tiktok_orders AS SELECT * FROM tiktok_orders_subset")
+        print("   Added tiktok_orders table")
+
+    # Add Line orders table
+    if line_orders_df is not None and not line_orders_df.empty:
+        # Select key columns for line_orders
+        key_cols = ['Order_ID', 'Order_Date', 'Product_Name', 'Customer_Type',
+                    'Quantity', 'Net_Sales', 'VAT', 'Total_Amount', 'Platform']
+        available_cols = [c for c in key_cols if c in line_orders_df.columns]
+        line_orders_subset = line_orders_df[available_cols].copy()
+        conn.execute("CREATE OR REPLACE TABLE line_orders AS SELECT * FROM line_orders_subset")
+        print("   Added line_orders table")
+
     # Create useful views
     conn.execute("""
         CREATE OR REPLACE VIEW kpi_summary AS
@@ -1323,6 +1549,26 @@ def create_duckdb_database(daily_df, product_df, ads_df, geo_df, orders_df, live
         ORDER BY Date DESC
     """)
 
+    # Create all_orders view combining Shopee, TikTok, and Line orders
+    try:
+        conn.execute("""
+            CREATE OR REPLACE VIEW all_orders AS
+            SELECT Order_ID, Order_Status, Order_Date, Product_Name, SKU,
+                   Quantity, Net_Sales, True_Net_Revenue, Platform, Province
+            FROM orders_raw
+            UNION ALL
+            SELECT Order_ID, Order_Status, Order_Date, Product_Name, SKU,
+                   Quantity, Net_Sales, True_Net_Revenue, Platform, Province
+            FROM tiktok_orders
+            UNION ALL
+            SELECT Order_ID, NULL as Order_Status, Order_Date, 'Direct Sale' as Product_Name, 'N/A' as SKU,
+                   Quantity, Net_Sales, Net_Sales as True_Net_Revenue, Platform, 'Unknown' as Province
+            FROM line_orders
+        """)
+        print("   Added all_orders view (Shopee + TikTok + Line)")
+    except Exception as e:
+        print(f"   Note: Could not create all_orders view: {e}")
+
     conn.close()
     print(f"   Database created: {db_path}")
     return db_path
@@ -1334,7 +1580,7 @@ def create_duckdb_database(daily_df, product_df, ads_df, geo_df, orders_df, live
 def run_pipeline():
     """Main pipeline execution"""
     print("=" * 60)
-    print("🚀 SHOPEE + TIKTOK DATA PIPELINE")
+    print("🚀 MULTI-PLATFORM E-COMMERCE DATA PIPELINE")
     print("=" * 60)
     print(f"Started at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
 
@@ -1345,6 +1591,8 @@ def run_pipeline():
     video_raw = load_video()
     tiktok_live_raw = load_tiktok_live()
     tiktok_video_raw = load_tiktok_video()
+    tiktok_orders_raw = load_tiktok_orders()
+    line_orders_raw = load_line_orders()
 
     # Clean data
     orders_clean = clean_orders(orders_raw)
@@ -1353,19 +1601,27 @@ def run_pipeline():
     video_clean = clean_video(video_raw)
     tiktok_live_clean = clean_tiktok_live(tiktok_live_raw)
     tiktok_video_clean = clean_tiktok_video(tiktok_video_raw)
+    tiktok_orders_clean = clean_tiktok_orders(tiktok_orders_raw)
+    line_orders_clean = clean_line_orders(line_orders_raw)
 
-    # Create master datasets
-    daily_master = create_daily_sales_master(orders_clean)
-    product_master = create_product_master(orders_clean)
+    # Combine all orders for unified master datasets
+    all_orders_list = [orders_clean, tiktok_orders_clean]
+    if not line_orders_clean.empty:
+        all_orders_list.append(line_orders_clean)
+    combined_orders = pd.concat([df for df in all_orders_list if not df.empty], ignore_index=True)
+
+    # Create master datasets (using combined orders)
+    daily_master = create_daily_sales_master(combined_orders)
+    product_master = create_product_master(combined_orders)
     ads_master = create_ads_master(ads_clean)
-    geo_master = create_geographic_master(orders_clean)
-    daily_geo_master = create_daily_geographic(orders_clean)
+    geo_master = create_geographic_master(combined_orders)
+    daily_geo_master = create_daily_geographic(combined_orders)
 
     # Create DuckDB database
     db_path = create_duckdb_database(
         daily_master, product_master, ads_master, geo_master, orders_clean,
         live_clean, video_clean, daily_geo_master,
-        tiktok_live_clean, tiktok_video_clean
+        tiktok_live_clean, tiktok_video_clean, tiktok_orders_clean, line_orders_clean
     )
 
     # Export to CSV for Looker Studio
@@ -1413,6 +1669,14 @@ def run_pipeline():
         tiktok_video_clean.to_csv(OUTPUT_DIR / "Combined_TikTok_Video.csv", index=False, encoding='utf-8-sig')
         print(f"   ✓ Combined_TikTok_Video.csv")
 
+    if not tiktok_orders_clean.empty:
+        tiktok_orders_clean.to_csv(OUTPUT_DIR / "Combined_TikTok_Orders.csv", index=False, encoding='utf-8-sig')
+        print(f"   ✓ Combined_TikTok_Orders.csv")
+
+    if not line_orders_clean.empty:
+        line_orders_clean.to_csv(OUTPUT_DIR / "Combined_Line_Orders.csv", index=False, encoding='utf-8-sig')
+        print(f"   ✓ Combined_Line_Orders.csv")
+
     # Summary report
     print("\n" + "=" * 60)
     print("📊 DATA SUMMARY")
@@ -1456,6 +1720,19 @@ def run_pipeline():
         print(f"   Total Orders: {orders_sum:,.0f}")
         print(f"   Total Views: {views_sum:,.0f}")
 
+    # TikTok Orders summary
+    if not tiktok_orders_clean.empty:
+        print(f"\n📦 TikTok Orders: {len(tiktok_orders_clean)} records")
+        print(f"   Unique Orders: {tiktok_orders_clean['Order_ID'].nunique():,.0f}")
+        print(f"   Total GMV: ฿{tiktok_orders_clean['Net_Sales'].sum():,.2f}")
+        print(f"   Total Quantity: {tiktok_orders_clean['Quantity'].sum():,.0f}")
+
+    # Line/Direct Sales summary
+    if not line_orders_clean.empty:
+        print(f"\n💬 Line/Direct Sales: {len(line_orders_clean)} records")
+        print(f"   Total GMV: ฿{line_orders_clean['Net_Sales'].sum():,.2f}")
+        print(f"   Total with VAT: ฿{line_orders_clean['Total_Amount'].sum():,.2f}")
+
     print("\n" + "=" * 60)
     print(f"✅ Pipeline completed at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     print(f"📁 Output directory: {OUTPUT_DIR}")
@@ -1468,6 +1745,8 @@ def run_pipeline():
         'geo': geo_master,
         'tiktok_live': tiktok_live_clean,
         'tiktok_video': tiktok_video_clean,
+        'tiktok_orders': tiktok_orders_clean,
+        'line_orders': line_orders_clean,
         'db_path': db_path
     }
 

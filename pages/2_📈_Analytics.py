@@ -1,6 +1,7 @@
 """
 Analytics & Predictive Models Page
 Regression analysis, forecasting, and performance prediction
+Supports TikTok, Shopee, and Combined data views
 """
 
 import streamlit as st
@@ -16,7 +17,8 @@ from pathlib import Path
 sys.path.append(str(Path(__file__).parent.parent))
 from utils import (
     safe_float, format_currency, format_number, load_live_data, load_video_data,
-    load_tiktok_live, load_tiktok_video, load_daily_sales, COMMON_STYLES
+    load_tiktok_live, load_tiktok_video, load_daily_sales, load_tiktok_orders,
+    load_all_orders, COMMON_STYLES
 )
 
 # ==========================================
@@ -46,6 +48,128 @@ except ImportError:
     SKLEARN_AVAILABLE = False
 
 # ==========================================
+# HELPER FUNCTIONS
+# ==========================================
+def prepare_daily_gmv_for_platform(tiktok_live, tiktok_orders, shopee_daily, analysis_type, start_date, end_date):
+    """Prepare daily GMV data based on selected platform"""
+    daily_data = pd.DataFrame()
+
+    if analysis_type == "TikTok Content":
+        # Use TikTok Orders for GMV data (more complete), fallback to Live if not available
+        if not tiktok_orders.empty and 'Order_Date' in tiktok_orders.columns:
+            tiktok_orders['Date'] = pd.to_datetime(tiktok_orders['Order_Date']).dt.date
+            daily_data = tiktok_orders.groupby('Date').agg({
+                'Net_Sales': lambda x: x.apply(safe_float).sum(),
+                'Quantity': lambda x: x.apply(safe_float).sum()
+            }).reset_index()
+            daily_data = daily_data.rename(columns={'Net_Sales': 'GMV', 'Quantity': 'Orders'})
+            daily_data['Platform'] = 'TikTok'
+        elif not tiktok_live.empty and 'Start_DateTime' in tiktok_live.columns:
+            tiktok_live['Date'] = tiktok_live['Start_DateTime'].dt.date
+            daily_data = tiktok_live.groupby('Date').agg({
+                'GMV': lambda x: x.apply(safe_float).sum(),
+                'Orders': lambda x: x.apply(safe_float).sum(),
+            }).reset_index()
+            daily_data['Platform'] = 'TikTok'
+
+    elif analysis_type == "Shopee Sales":
+        if not shopee_daily.empty:
+            shopee_daily = shopee_daily.copy()
+            shopee_daily['Date'] = pd.to_datetime(shopee_daily['Date']).dt.date
+            mask = (shopee_daily['Date'] >= start_date) & (shopee_daily['Date'] <= end_date)
+            daily_data = shopee_daily[mask].copy()
+            daily_data = daily_data.rename(columns={'Total_GMV': 'GMV', 'Total_Orders': 'Orders'})
+            daily_data = daily_data[['Date', 'GMV', 'Orders']].reset_index(drop=True)
+            daily_data['Platform'] = 'Shopee'
+
+    else:  # Combined Overview
+        frames = []
+
+        # TikTok data - use orders for GMV
+        if not tiktok_orders.empty and 'Order_Date' in tiktok_orders.columns:
+            tiktok_orders['Date'] = pd.to_datetime(tiktok_orders['Order_Date']).dt.date
+            tiktok_daily = tiktok_orders.groupby('Date').agg({
+                'Net_Sales': lambda x: x.apply(safe_float).sum(),
+                'Quantity': lambda x: x.apply(safe_float).sum()
+            }).reset_index()
+            tiktok_daily = tiktok_daily.rename(columns={'Net_Sales': 'GMV', 'Quantity': 'Orders'})
+            tiktok_daily['Platform'] = 'TikTok'
+            frames.append(tiktok_daily)
+
+        # Shopee data
+        if not shopee_daily.empty:
+            shopee_copy = shopee_daily.copy()
+            shopee_copy['Date'] = pd.to_datetime(shopee_copy['Date']).dt.date
+            mask = (shopee_copy['Date'] >= start_date) & (shopee_copy['Date'] <= end_date)
+            shopee_filtered = shopee_copy[mask].copy()
+            shopee_filtered = shopee_filtered.rename(columns={'Total_GMV': 'GMV', 'Total_Orders': 'Orders'})
+            shopee_filtered = shopee_filtered[['Date', 'GMV', 'Orders']]
+            shopee_filtered['Platform'] = 'Shopee'
+            frames.append(shopee_filtered)
+
+        if frames:
+            daily_data = pd.concat(frames, ignore_index=True)
+
+    if not daily_data.empty:
+        daily_data['Date'] = pd.to_datetime(daily_data['Date'])
+        daily_data = daily_data.sort_values('Date')
+
+    return daily_data
+
+
+def prepare_session_data_for_platform(tiktok_live, tiktok_orders, shopee_daily, analysis_type):
+    """Prepare session/transaction level data for correlation and prediction"""
+    session_data = pd.DataFrame()
+
+    if analysis_type == "TikTok Content":
+        # Use TikTok Orders for GMV data, or Live for engagement metrics
+        if not tiktok_orders.empty:
+            session_data = tiktok_orders.copy()
+            session_data = session_data.rename(columns={'Net_Sales': 'GMV'})
+            session_data['Platform'] = 'TikTok'
+        elif not tiktok_live.empty:
+            session_data = tiktok_live.copy()
+            session_data['Platform'] = 'TikTok'
+
+    elif analysis_type == "Shopee Sales":
+        if not shopee_daily.empty:
+            # Aggregate to daily level for Shopee (no session-level data)
+            shopee_daily = shopee_daily.copy()
+            shopee_daily['Date'] = pd.to_datetime(shopee_daily['Date'])
+            session_data = shopee_daily.rename(columns={
+                'Total_GMV': 'GMV',
+                'Total_Orders': 'Orders',
+                'Total_Quantity': 'Quantity'
+            })
+            session_data['Platform'] = 'Shopee'
+
+    else:  # Combined
+        frames = []
+
+        if not tiktok_orders.empty:
+            tiktok_copy = tiktok_orders.copy()
+            tiktok_copy = tiktok_copy.rename(columns={'Net_Sales': 'GMV'})
+            tiktok_copy['Platform'] = 'TikTok'
+            frames.append(tiktok_copy)
+
+        if not shopee_daily.empty:
+            shopee_copy = shopee_daily.copy()
+            shopee_copy['Date'] = pd.to_datetime(shopee_copy['Date'])
+            shopee_copy = shopee_copy.rename(columns={
+                'Total_GMV': 'GMV',
+                'Total_Orders': 'Orders',
+                'Total_Quantity': 'Quantity'
+            })
+            shopee_copy['Platform'] = 'Shopee'
+            frames.append(shopee_copy)
+
+        if frames:
+            session_data = pd.concat(frames, ignore_index=True)
+
+    return session_data
+
+
+# ==========================================
 # SIDEBAR
 # ==========================================
 with st.sidebar:
@@ -59,20 +183,31 @@ with st.sidebar:
 
     # Quick time range
     st.markdown("#### ⚡ Quick Select")
-    col1, col2 = st.columns(2)
+    col1, col2, col3 = st.columns(3)
 
     with col1:
+        if st.button("Last 7 Days", use_container_width=True):
+            st.session_state.date_range = (max_date - timedelta(days=7), max_date)
+            st.rerun()
         if st.button("Last 30 Days", use_container_width=True):
             st.session_state.date_range = (max_date - timedelta(days=30), max_date)
-        if st.button("Q1", use_container_width=True):
-            q1_end = min(datetime(max_date.year, 3, 31).date(), max_date)
-            st.session_state.date_range = (datetime(max_date.year, 1, 1).date(), q1_end)
+            st.rerun()
 
     with col2:
         if st.button("Last 90 Days", use_container_width=True):
             st.session_state.date_range = (max_date - timedelta(days=90), max_date)
+            st.rerun()
+        if st.button("Last 12 Months", use_container_width=True):
+            st.session_state.date_range = (max_date - timedelta(days=365), max_date)
+            st.rerun()
+
+    with col3:
         if st.button("This Year", use_container_width=True):
             st.session_state.date_range = (datetime(max_date.year, 1, 1).date(), max_date)
+            st.rerun()
+        if st.button("All Time", use_container_width=True, type="primary"):
+            st.session_state.date_range = (min_date, max_date)
+            st.rerun()
 
     st.markdown("---")
 
@@ -94,7 +229,7 @@ with st.sidebar:
     # Analysis type
     st.markdown("#### 🔧 Analysis Settings")
     analysis_type = st.selectbox(
-        "Analysis Focus",
+        "Platform Focus",
         options=["TikTok Content", "Shopee Sales", "Combined Overview"],
         index=0
     )
@@ -125,7 +260,7 @@ else:
 # HEADER
 # ==========================================
 st.markdown('<p class="main-header">📈 Analytics & Predictive Models</p>', unsafe_allow_html=True)
-st.markdown(f"**Period:** {start_date} to {end_date}")
+st.markdown(f"**Period:** {start_date} to {end_date} | **Platform:** {analysis_type}")
 
 if not SKLEARN_AVAILABLE:
     st.warning("⚠️ scikit-learn not installed. Some features limited. Run: `pip install scikit-learn`")
@@ -136,15 +271,17 @@ if not SKLEARN_AVAILABLE:
 # Load TikTok data
 tiktok_live_raw = load_tiktok_live()
 tiktok_video_raw = load_tiktok_video()
+tiktok_orders_raw = load_tiktok_orders()
 
 # Load Shopee data
 shopee_live_raw = load_live_data()
 shopee_video_raw = load_video_data()
 daily_sales_raw = load_daily_sales()
 
-# Filter by date
+# Filter TikTok by date
 tiktok_live = pd.DataFrame()
 tiktok_video = pd.DataFrame()
+tiktok_orders = pd.DataFrame()
 
 if not tiktok_live_raw.empty and 'Start_Time' in tiktok_live_raw.columns:
     tiktok_live_raw['Start_DateTime'] = pd.to_datetime(tiktok_live_raw['Start_Time'], errors='coerce')
@@ -155,6 +292,22 @@ if not tiktok_video_raw.empty and 'Post_Time' in tiktok_video_raw.columns:
     tiktok_video_raw['Post_DateTime'] = pd.to_datetime(tiktok_video_raw['Post_Time'], errors='coerce')
     mask = (tiktok_video_raw['Post_DateTime'] >= pd.to_datetime(start_date)) & (tiktok_video_raw['Post_DateTime'] <= pd.to_datetime(end_date))
     tiktok_video = tiktok_video_raw[mask].copy()
+
+if not tiktok_orders_raw.empty and 'Order_Date' in tiktok_orders_raw.columns:
+    tiktok_orders_raw['Order_Date'] = pd.to_datetime(tiktok_orders_raw['Order_Date'], errors='coerce')
+    mask = (tiktok_orders_raw['Order_Date'] >= pd.to_datetime(start_date)) & (tiktok_orders_raw['Order_Date'] <= pd.to_datetime(end_date))
+    tiktok_orders = tiktok_orders_raw[mask].copy()
+
+# Prepare platform-specific data
+daily_gmv = prepare_daily_gmv_for_platform(tiktok_live, tiktok_orders, daily_sales_raw, analysis_type, start_date, end_date)
+session_data = prepare_session_data_for_platform(tiktok_live, tiktok_orders, daily_sales_raw, analysis_type)
+
+# Platform colors
+PLATFORM_COLORS = {
+    'TikTok': '#000000',
+    'Shopee': '#ee4d2d',
+    'Combined': '#6366f1'
+}
 
 # ==========================================
 # TABS
@@ -171,234 +324,283 @@ tab1, tab2, tab3, tab4 = st.tabs([
 # ==========================================
 with tab1:
     st.markdown("## 📊 Correlation Analysis")
-    st.markdown("Understand which metrics drive GMV and engagement")
+    st.markdown(f"Understand which metrics drive GMV and engagement - **{analysis_type}**")
 
-    if not tiktok_live.empty:
-        st.markdown("### TikTok Live - Correlation Matrix")
+    if not session_data.empty:
+        platform_label = analysis_type.replace(" Content", "").replace(" Sales", "").replace(" Overview", "")
+        st.markdown(f"### {platform_label} - Correlation Matrix")
 
-        # Prepare numeric columns
-        numeric_cols = ['GMV', 'Orders', 'Viewers', 'Views', 'Likes', 'Comments', 'Shares',
-                       'New_Followers', 'Products_Sold', 'Unique_Customers', 'Engagement_Rate']
+        # Prepare numeric columns based on platform
+        if analysis_type == "TikTok Content":
+            # TikTok Orders columns
+            numeric_cols = ['GMV', 'Quantity', 'Original_Price', 'Gross_Sales', 'Platform_Discount',
+                           'Seller_Discount', 'Total_Discount', 'Shipping_Fee', 'Weight']
+        elif analysis_type == "Shopee Sales":
+            numeric_cols = ['GMV', 'Orders', 'Quantity', 'Total_AOV', 'Total_Net_Revenue']
+        else:  # Combined
+            numeric_cols = ['GMV', 'Orders']
 
-        available_cols = [c for c in numeric_cols if c in tiktok_live.columns]
-        corr_df = tiktok_live[available_cols].apply(lambda x: pd.to_numeric(x, errors='coerce')).dropna()
+        available_cols = [c for c in numeric_cols if c in session_data.columns]
 
-        if len(corr_df) > 10:
-            corr_matrix = corr_df.corr()
+        if len(available_cols) >= 2:
+            corr_df = session_data[available_cols].apply(lambda x: pd.to_numeric(x, errors='coerce')).dropna()
 
-            fig = go.Figure(data=go.Heatmap(
-                z=corr_matrix.values,
-                x=corr_matrix.columns,
-                y=corr_matrix.columns,
-                colorscale='RdBu',
-                zmid=0,
-                text=[[f'{v:.2f}' for v in row] for row in corr_matrix.values],
-                texttemplate='%{text}',
-                textfont={'size': 10}
-            ))
-            fig.update_layout(
-                title="TikTok Live Metrics Correlation",
-                height=500,
-                width=700
-            )
-            st.plotly_chart(fig, use_container_width=True)
+            if len(corr_df) > 5:
+                corr_matrix = corr_df.corr()
 
-            # Key insights
-            st.markdown("### 🔍 Key Insights")
-            if 'GMV' in corr_matrix.columns:
-                gmv_corr = corr_matrix['GMV'].drop('GMV').abs().sort_values(ascending=False)
-                st.markdown(f"**Top factors correlated with GMV:**")
-                for i, (col, val) in enumerate(gmv_corr.head(5).items(), 1):
-                    st.write(f"{i}. **{col}**: {val:.3f}")
+                fig = go.Figure(data=go.Heatmap(
+                    z=corr_matrix.values,
+                    x=corr_matrix.columns,
+                    y=corr_matrix.columns,
+                    colorscale='RdBu',
+                    zmid=0,
+                    text=[[f'{v:.2f}' for v in row] for row in corr_matrix.values],
+                    texttemplate='%{text}',
+                    textfont={'size': 10}
+                ))
+                fig.update_layout(
+                    title=f"{platform_label} Metrics Correlation",
+                    height=500,
+                    width=700
+                )
+                st.plotly_chart(fig, use_container_width=True)
 
-            # Scatter plot for top correlation
-            st.markdown("### 📈 GMV vs Orders Relationship")
-            fig_scatter = go.Figure()
-            fig_scatter.add_trace(go.Scatter(
-                x=corr_df['Orders'],
-                y=corr_df['GMV'],
-                mode='markers',
-                marker=dict(size=8, color=corr_df['Engagement_Rate'], colorscale='Viridis', showscale=True),
-                text=tiktok_live.loc[corr_df.index, 'Nickname'] if 'Nickname' in tiktok_live.columns else None,
-                name='Sessions'
-            ))
-            fig_scatter.update_layout(
-                title="GMV vs Orders (Color = Engagement Rate)",
-                xaxis_title="Orders",
-                yaxis_title="GMV (฿)",
-                height=400
-            )
-            st.plotly_chart(fig_scatter, use_container_width=True)
+                # Key insights
+                st.markdown("### 🔍 Key Insights")
+                if 'GMV' in corr_matrix.columns:
+                    gmv_corr = corr_matrix['GMV'].drop('GMV').abs().sort_values(ascending=False)
+                    st.markdown(f"**Top factors correlated with GMV:**")
+                    for i, (col, val) in enumerate(gmv_corr.head(5).items(), 1):
+                        st.write(f"{i}. **{col}**: {val:.3f}")
+
+                # Scatter plot
+                if 'Orders' in available_cols:
+                    st.markdown("### 📈 GMV vs Orders Relationship")
+                    fig_scatter = go.Figure()
+
+                    if 'Platform' in session_data.columns and analysis_type == "Combined Overview":
+                        for platform in session_data['Platform'].unique():
+                            platform_df = session_data[session_data['Platform'] == platform]
+                            fig_scatter.add_trace(go.Scatter(
+                                x=platform_df['Orders'].apply(safe_float),
+                                y=platform_df['GMV'].apply(safe_float),
+                                mode='markers',
+                                name=platform,
+                                marker=dict(color=PLATFORM_COLORS.get(platform, '#666666'), size=8),
+                            ))
+                    else:
+                        fig_scatter.add_trace(go.Scatter(
+                            x=corr_df['Orders'],
+                            y=corr_df['GMV'],
+                            mode='markers',
+                            marker=dict(size=8, color=PLATFORM_COLORS.get(platform_label, '#ee4d2d')),
+                            name='Data Points'
+                        ))
+
+                    fig_scatter.update_layout(
+                        title="GMV vs Orders",
+                        xaxis_title="Orders",
+                        yaxis_title="GMV (฿)",
+                        height=400
+                    )
+                    st.plotly_chart(fig_scatter, use_container_width=True)
+            else:
+                st.info("Not enough data for correlation analysis (need >5 records)")
         else:
-            st.info("Not enough data for correlation analysis (need >10 sessions)")
+            st.info(f"Not enough numeric columns available for {analysis_type}")
     else:
-        st.info("No TikTok Live data available for the selected period")
+        st.info(f"No data available for {analysis_type} in the selected period")
 
 # ==========================================
 # TAB 2: SALES FORECASTING
 # ==========================================
 with tab2:
     st.markdown("## 🔮 Sales Forecasting")
-    st.markdown("Predict future GMV using time series analysis")
+    st.markdown(f"Predict future GMV using time series analysis - **{analysis_type}**")
 
-    if not tiktok_live.empty and 'Start_DateTime' in tiktok_live.columns:
-        # Aggregate daily GMV
-        tiktok_live['Date'] = tiktok_live['Start_DateTime'].dt.date
-        daily_gmv = tiktok_live.groupby('Date').agg({
-            'GMV': lambda x: x.apply(safe_float).sum(),
-            'Orders': lambda x: x.apply(safe_float).sum(),
-            'Viewers': lambda x: x.apply(safe_float).sum()
-        }).reset_index()
-        daily_gmv['Date'] = pd.to_datetime(daily_gmv['Date'])
-        daily_gmv = daily_gmv.sort_values('Date')
+    if not daily_gmv.empty and len(daily_gmv) >= 7:
+        # Aggregate by date if multiple platforms
+        if 'Platform' in daily_gmv.columns and analysis_type == "Combined Overview":
+            daily_agg = daily_gmv.groupby('Date').agg({
+                'GMV': 'sum',
+                'Orders': 'sum'
+            }).reset_index()
+        else:
+            daily_agg = daily_gmv[['Date', 'GMV', 'Orders']].copy()
 
-        if len(daily_gmv) >= 7:
-            col1, col2 = st.columns([2, 1])
+        daily_agg = daily_agg.sort_values('Date')
 
-            with col1:
-                st.markdown("### 📊 GMV Trend & Forecast")
+        col1, col2 = st.columns([2, 1])
 
-                # Simple exponential smoothing forecast
-                alpha = 0.3  # Smoothing factor
-                daily_gmv['GMV_Smooth'] = daily_gmv['GMV'].ewm(alpha=alpha).mean()
+        with col1:
+            st.markdown("### 📊 GMV Trend & Forecast")
 
-                # Calculate trend
-                if len(daily_gmv) >= 14:
-                    # Linear regression for trend
-                    X = np.arange(len(daily_gmv)).reshape(-1, 1)
-                    y = daily_gmv['GMV'].values
+            # Simple exponential smoothing forecast
+            alpha = 0.3
+            daily_agg['GMV_Smooth'] = daily_agg['GMV'].ewm(alpha=alpha).mean()
 
-                    if SKLEARN_AVAILABLE:
-                        model = LinearRegression()
-                        model.fit(X, y)
-                        trend = model.predict(X)
-                        daily_gmv['Trend'] = trend
+            # Calculate trend
+            forecast_dates = None
+            forecast_values = None
 
-                        # Forecast next 7 days
-                        future_X = np.arange(len(daily_gmv), len(daily_gmv) + 7).reshape(-1, 1)
-                        forecast = model.predict(future_X)
+            if len(daily_agg) >= 14 and SKLEARN_AVAILABLE:
+                X = np.arange(len(daily_agg)).reshape(-1, 1)
+                y = daily_agg['GMV'].values
 
-                        # Create future dates
-                        last_date = daily_gmv['Date'].max()
-                        future_dates = [last_date + timedelta(days=i+1) for i in range(7)]
+                model = LinearRegression()
+                model.fit(X, y)
+                trend = model.predict(X)
+                daily_agg['Trend'] = trend
 
-                # Plot
-                fig = go.Figure()
+                # Forecast next 7 days
+                future_X = np.arange(len(daily_agg), len(daily_agg) + 7).reshape(-1, 1)
+                forecast_values = model.predict(future_X)
 
-                # Actual GMV
+                last_date = daily_agg['Date'].max()
+                forecast_dates = [last_date + timedelta(days=i+1) for i in range(7)]
+
+            # Plot
+            fig = go.Figure()
+
+            # Plot by platform for combined view
+            if 'Platform' in daily_gmv.columns and analysis_type == "Combined Overview":
+                for platform in daily_gmv['Platform'].unique():
+                    platform_data = daily_gmv[daily_gmv['Platform'] == platform].sort_values('Date')
+                    fig.add_trace(go.Scatter(
+                        x=platform_data['Date'],
+                        y=platform_data['GMV'],
+                        name=f'{platform} GMV',
+                        mode='lines+markers',
+                        line=dict(color=PLATFORM_COLORS.get(platform, '#666666'), width=2),
+                        marker=dict(size=6)
+                    ))
+                # Add total line
                 fig.add_trace(go.Scatter(
-                    x=daily_gmv['Date'],
-                    y=daily_gmv['GMV'],
+                    x=daily_agg['Date'],
+                    y=daily_agg['GMV'],
+                    name='Total GMV',
+                    mode='lines',
+                    line=dict(color='#6366f1', width=3, dash='dot'),
+                ))
+            else:
+                platform_label = analysis_type.replace(" Content", "").replace(" Sales", "").replace(" Overview", "")
+                fig.add_trace(go.Scatter(
+                    x=daily_agg['Date'],
+                    y=daily_agg['GMV'],
                     name='Actual GMV',
                     mode='lines+markers',
-                    line=dict(color='#ee4d2d', width=2),
+                    line=dict(color=PLATFORM_COLORS.get(platform_label, '#ee4d2d'), width=2),
                     marker=dict(size=6)
                 ))
 
-                # Smoothed
+            # Smoothed
+            fig.add_trace(go.Scatter(
+                x=daily_agg['Date'],
+                y=daily_agg['GMV_Smooth'],
+                name='Smoothed (EWMA)',
+                line=dict(color='#0066cc', width=2, dash='dot')
+            ))
+
+            # Trend and forecast
+            if SKLEARN_AVAILABLE and len(daily_agg) >= 14:
                 fig.add_trace(go.Scatter(
-                    x=daily_gmv['Date'],
-                    y=daily_gmv['GMV_Smooth'],
-                    name='Smoothed (EWMA)',
-                    line=dict(color='#0066cc', width=2, dash='dot')
+                    x=daily_agg['Date'],
+                    y=daily_agg['Trend'],
+                    name='Trend Line',
+                    line=dict(color='#28a745', width=2, dash='dash')
                 ))
 
-                # Trend line
-                if SKLEARN_AVAILABLE and len(daily_gmv) >= 14:
+                if forecast_dates is not None:
                     fig.add_trace(go.Scatter(
-                        x=daily_gmv['Date'],
-                        y=daily_gmv['Trend'],
-                        name='Trend Line',
-                        line=dict(color='#28a745', width=2, dash='dash')
-                    ))
-
-                    # Forecast
-                    fig.add_trace(go.Scatter(
-                        x=future_dates,
-                        y=forecast,
+                        x=forecast_dates,
+                        y=forecast_values,
                         name='7-Day Forecast',
                         mode='lines+markers',
                         line=dict(color='#9c27b0', width=2),
                         marker=dict(size=8, symbol='diamond')
                     ))
 
-                fig.update_layout(
-                    title="Daily GMV with Trend & Forecast",
-                    xaxis_title="Date",
-                    yaxis_title="GMV (฿)",
-                    hovermode='x unified',
-                    height=450,
-                    legend=dict(orientation="h", y=1.1)
-                )
-                st.plotly_chart(fig, use_container_width=True)
+            fig.update_layout(
+                title="Daily GMV with Trend & Forecast",
+                xaxis_title="Date",
+                yaxis_title="GMV (฿)",
+                hovermode='x unified',
+                height=450,
+                legend=dict(orientation="h", y=1.1)
+            )
+            st.plotly_chart(fig, use_container_width=True)
 
-            with col2:
-                st.markdown("### 📈 Forecast Summary")
+        with col2:
+            st.markdown("### 📈 Forecast Summary")
 
-                if SKLEARN_AVAILABLE and len(daily_gmv) >= 14:
-                    # Stats
-                    avg_gmv = daily_gmv['GMV'].mean()
-                    last_gmv = daily_gmv['GMV'].iloc[-1]
-                    trend_dir = "📈 Upward" if model.coef_[0] > 0 else "📉 Downward"
+            if SKLEARN_AVAILABLE and len(daily_agg) >= 14:
+                avg_gmv = daily_agg['GMV'].mean()
+                last_gmv = daily_agg['GMV'].iloc[-1]
+                trend_dir = "📈 Upward" if model.coef_[0] > 0 else "📉 Downward"
 
-                    st.metric("Avg Daily GMV", format_currency(avg_gmv))
-                    st.metric("Last Day GMV", format_currency(last_gmv))
-                    st.metric("Trend Direction", trend_dir)
+                st.metric("Avg Daily GMV", format_currency(avg_gmv))
+                st.metric("Last Day GMV", format_currency(last_gmv))
+                st.metric("Trend Direction", trend_dir)
 
+                if forecast_dates is not None:
                     st.markdown("---")
                     st.markdown("**7-Day Forecast:**")
-                    for i, (date, gmv) in enumerate(zip(future_dates[:7], forecast[:7])):
+                    for i, (date, gmv) in enumerate(zip(forecast_dates[:7], forecast_values[:7])):
                         st.write(f"• {date.strftime('%Y-%m-%d')}: {format_currency(gmv)}")
 
-                    # Total forecast
-                    total_forecast = sum(forecast[:7])
+                    total_forecast = sum(forecast_values[:7])
                     st.markdown(f"**Total 7-Day Forecast:** {format_currency(total_forecast)}")
-                else:
-                    st.info("Need ≥14 days of data for forecasting")
+            else:
+                st.info("Need ≥14 days of data for forecasting")
 
-            # Model accuracy
-            if SKLEARN_AVAILABLE and len(daily_gmv) >= 14:
-                st.markdown("### 🎯 Model Accuracy")
-                y_pred = model.predict(X)
-                r2 = r2_score(y, y_pred)
-                mae = mean_absolute_error(y, y_pred)
-                rmse = np.sqrt(mean_squared_error(y, y_pred))
+        # Model accuracy
+        if SKLEARN_AVAILABLE and len(daily_agg) >= 14:
+            st.markdown("### 🎯 Model Accuracy")
+            y_pred = model.predict(X)
+            r2 = r2_score(y, y_pred)
+            mae = mean_absolute_error(y, y_pred)
+            rmse = np.sqrt(mean_squared_error(y, y_pred))
 
-                col1, col2, col3 = st.columns(3)
-                with col1:
-                    st.metric("R² Score", f"{r2:.3f}", help="How well the model fits data (1.0 = perfect)")
-                with col2:
-                    st.metric("MAE", format_currency(mae), help="Average prediction error")
-                with col3:
-                    st.metric("RMSE", format_currency(rmse), help="Root mean square error")
-        else:
-            st.info("Need at least 7 days of data for forecasting")
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.metric("R² Score", f"{r2:.3f}", help="How well the model fits data (1.0 = perfect)")
+            with col2:
+                st.metric("MAE", format_currency(mae), help="Average prediction error")
+            with col3:
+                st.metric("RMSE", format_currency(rmse), help="Root mean square error")
     else:
-        st.info("No TikTok Live data available for forecasting")
+        st.info(f"Need at least 7 days of data for forecasting. Current: {len(daily_gmv)} days")
 
 # ==========================================
 # TAB 3: PERFORMANCE PREDICTION
 # ==========================================
 with tab3:
     st.markdown("## 🎯 Performance Prediction Model")
-    st.markdown("Predict GMV based on engagement metrics using Random Forest")
+    st.markdown(f"Predict GMV based on metrics using Random Forest - **{analysis_type}**")
 
-    if not tiktok_live.empty and SKLEARN_AVAILABLE:
-        # Prepare features
-        feature_cols = ['Viewers', 'Views', 'Likes', 'Comments', 'Shares', 'New_Followers', 'Products_Sold']
-        available_features = [c for c in feature_cols if c in tiktok_live.columns]
+    if not session_data.empty and SKLEARN_AVAILABLE:
+        # Define features based on platform
+        if analysis_type == "TikTok Content":
+            # TikTok Orders has different columns than TikTok Live
+            feature_cols = ['Quantity', 'Original_Price', 'Gross_Sales', 'Total_Discount', 'Shipping_Fee']
+        elif analysis_type == "Shopee Sales":
+            feature_cols = ['Orders', 'Quantity', 'Total_AOV']
+        else:
+            feature_cols = ['Orders']
 
-        if len(available_features) >= 3 and len(tiktok_live) >= 30:
+        available_features = [c for c in feature_cols if c in session_data.columns]
+
+        if len(available_features) >= 1 and len(session_data) >= 20:
             # Create feature matrix
-            X = tiktok_live[available_features].apply(lambda x: pd.to_numeric(x, errors='coerce')).fillna(0)
-            y = tiktok_live['GMV'].apply(safe_float)
+            X = session_data[available_features].apply(lambda x: pd.to_numeric(x, errors='coerce')).fillna(0)
+            y = session_data['GMV'].apply(safe_float)
 
             # Remove zero GMV for better training
             mask = y > 0
             X = X[mask]
             y = y[mask]
 
-            if len(X) >= 20:
+            if len(X) >= 15:
                 # Split data
                 X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
 
@@ -428,7 +630,6 @@ with tab3:
                     st.metric("Test R²", f"{test_r2:.3f}")
                     st.metric("Mean Absolute Error", format_currency(test_mae))
 
-                    # Interpretation
                     if test_r2 > 0.7:
                         st.success("✅ Good predictive power! Model explains {:.0f}% of GMV variance.".format(test_r2 * 100))
                     elif test_r2 > 0.4:
@@ -444,12 +645,14 @@ with tab3:
                         x=y_test,
                         y=y_pred_test,
                         mode='markers',
-                        marker=dict(size=10, color='#ee4d2d'),
+                        marker=dict(size=10, color=PLATFORM_COLORS.get(
+                            analysis_type.replace(" Content", "").replace(" Sales", "").replace(" Overview", ""),
+                            '#ee4d2d'
+                        )),
                         name='Test Data'
                     ))
 
-                    # Perfect prediction line
-                    max_val = max(y_test.max(), max(y_pred_test))
+                    max_val = max(y_test.max(), max(y_pred_test)) if len(y_pred_test) > 0 else 1
                     fig.add_trace(go.Scatter(
                         x=[0, max_val],
                         y=[0, max_val],
@@ -479,46 +682,51 @@ with tab3:
                         user_inputs[col_name] = st.number_input(col_name, value=default_val, step=100)
 
                 if st.button("Predict GMV", type="primary"):
-                    # Scale user input
                     user_features = np.array([[user_inputs[c] for c in available_features]])
                     user_scaled = scaler.transform(user_features)
                     predicted_gmv = rf_model.predict(user_scaled)[0]
 
                     st.metric("Predicted GMV", format_currency(predicted_gmv))
-
-                    # Confidence interpretation
                     st.caption("Note: Prediction based on historical patterns. Actual results may vary.")
             else:
-                st.info("Need at least 20 sessions with GMV > 0 for prediction model")
+                st.info("Need at least 15 records with GMV > 0 for prediction model")
         else:
-            st.info("Need at least 30 sessions with 3+ metrics for prediction model")
+            st.info(f"Need at least 20 records with metrics for prediction model. Current: {len(session_data)} records")
     else:
         if not SKLEARN_AVAILABLE:
             st.error("scikit-learn required. Install with: `pip install scikit-learn`")
         else:
-            st.info("No TikTok Live data available for prediction")
+            st.info(f"No data available for {analysis_type}")
 
 # ==========================================
 # TAB 4: FEATURE IMPORTANCE
 # ==========================================
 with tab4:
     st.markdown("## 📋 Feature Importance Analysis")
-    st.markdown("Which metrics have the biggest impact on GMV?")
+    st.markdown(f"Which metrics have the biggest impact on GMV? - **{analysis_type}**")
 
-    if not tiktok_live.empty and SKLEARN_AVAILABLE:
-        feature_cols = ['Viewers', 'Views', 'Likes', 'Comments', 'Shares', 'New_Followers',
-                       'Products_Sold', 'Products_Added', 'Unique_Customers', 'Engagement_Rate']
-        available_features = [c for c in feature_cols if c in tiktok_live.columns]
+    if not session_data.empty and SKLEARN_AVAILABLE:
+        # Define features based on platform
+        if analysis_type == "TikTok Content":
+            # TikTok Orders has different columns than TikTok Live
+            feature_cols = ['Quantity', 'Original_Price', 'Gross_Sales', 'Platform_Discount',
+                           'Seller_Discount', 'Shipping_Fee', 'Weight']
+        elif analysis_type == "Shopee Sales":
+            feature_cols = ['Orders', 'Quantity', 'Total_AOV', 'Total_Net_Revenue']
+        else:
+            feature_cols = ['Orders']
 
-        if len(available_features) >= 3:
-            X = tiktok_live[available_features].apply(lambda x: pd.to_numeric(x, errors='coerce')).fillna(0)
-            y = tiktok_live['GMV'].apply(safe_float)
+        available_features = [c for c in feature_cols if c in session_data.columns]
+
+        if len(available_features) >= 1:
+            X = session_data[available_features].apply(lambda x: pd.to_numeric(x, errors='coerce')).fillna(0)
+            y = session_data['GMV'].apply(safe_float)
 
             mask = y > 0
             X = X[mask]
             y = y[mask]
 
-            if len(X) >= 20:
+            if len(X) >= 15:
                 # Train Random Forest for feature importance
                 rf = RandomForestRegressor(n_estimators=100, random_state=42)
                 rf.fit(X, y)
@@ -537,7 +745,10 @@ with tab4:
                         x=importance_df['Importance'],
                         y=importance_df['Feature'],
                         orientation='h',
-                        marker_color='#ee4d2d'
+                        marker_color=PLATFORM_COLORS.get(
+                            analysis_type.replace(" Content", "").replace(" Sales", "").replace(" Overview", ""),
+                            '#ee4d2d'
+                        )
                     ))
                     fig.update_layout(
                         title="What Drives GMV?",
@@ -562,6 +773,10 @@ with tab4:
                         st.write("• Focus on increasing live viewership")
                     if 'Products_Sold' in top_3:
                         st.write("• Showcase more products during live")
+                    if 'Orders' in top_3:
+                        st.write("• Focus on converting viewers to buyers")
+                    if 'Quantity' in top_3:
+                        st.write("• Encourage larger basket sizes")
                     if 'Engagement_Rate' in top_3:
                         st.write("• Improve audience interaction")
                     if 'New_Followers' in top_3:
@@ -571,15 +786,15 @@ with tab4:
                 st.markdown("---")
                 st.markdown("### 📈 Statistical Summary")
                 st.dataframe(
-                    tiktok_live[available_features + ['GMV']].describe().round(2),
+                    session_data[available_features + ['GMV']].describe().round(2),
                     use_container_width=True
                 )
             else:
-                st.info("Need ≥20 sessions for feature importance analysis")
+                st.info("Need ≥15 records for feature importance analysis")
         else:
-            st.info("Need at least 3 metrics for feature analysis")
+            st.info("Need at least 1 metric for feature analysis")
     else:
         if not SKLEARN_AVAILABLE:
             st.error("scikit-learn required")
         else:
-            st.info("No data available")
+            st.info(f"No data available for {analysis_type}")
