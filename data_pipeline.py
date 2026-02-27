@@ -16,6 +16,8 @@ import os
 import re
 import glob
 import sys
+import json
+import hashlib
 from datetime import datetime, timedelta
 from pathlib import Path
 import warnings
@@ -52,6 +54,95 @@ LINE_ORDERS_DIR = get_source_dir("Facebook and Line")
 
 # Create output directory
 OUTPUT_DIR.mkdir(exist_ok=True)
+
+# Manifest file for tracking processed files
+MANIFEST_PATH = OUTPUT_DIR / "file_manifest.json"
+
+# ==========================================
+# MANIFEST TRACKING FUNCTIONS
+# ==========================================
+def load_manifest():
+    """Load the file manifest (tracks which files have been processed)"""
+    if MANIFEST_PATH.exists():
+        try:
+            with open(MANIFEST_PATH, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except:
+            return {}
+    return {}
+
+def save_manifest(manifest):
+    """Save the manifest to disk"""
+    with open(MANIFEST_PATH, 'w', encoding='utf-8') as f:
+        json.dump(manifest, f, indent=2, ensure_ascii=False)
+
+def get_file_signature(file_path):
+    """Get a unique signature for a file (mtime + size)"""
+    stat = file_path.stat()
+    return f"{stat.st_mtime}_{stat.st_size}"
+
+def get_files_to_process(directory, extension, manifest, data_type):
+    """Compare files with manifest and return list of (file, is_new) tuples"""
+    files = list(directory.glob(f'*.{extension}')) if directory.exists() else []
+    to_process = []
+    skipped = 0
+
+    for file in files:
+        file_key = f"{data_type}:{file.name}"
+        signature = get_file_signature(file)
+
+        if file_key in manifest:
+            if manifest[file_key]['signature'] == signature:
+                skipped += 1
+                continue  # File unchanged, skip
+
+        to_process.append(file)
+
+    return to_process, skipped
+
+def update_manifest_entry(manifest, file_path, data_type, record_count):
+    """Update manifest with processed file info"""
+    file_key = f"{data_type}:{file_path.name}"
+    manifest[file_key] = {
+        'signature': get_file_signature(file_path),
+        'records': record_count,
+        'processed_at': datetime.now().isoformat()
+    }
+
+# ==========================================
+# DUCKDB INCREMENTAL FUNCTIONS
+# ==========================================
+def get_existing_data_from_duckdb(table_name, db_path=None):
+    """Load existing data from DuckDB table"""
+    if db_path is None:
+        db_path = OUTPUT_DIR / "shopee_dashboard.duckdb"
+
+    if not Path(db_path).exists():
+        return pd.DataFrame()
+
+    try:
+        conn = duckdb.connect(str(db_path), read_only=True)
+        df = conn.execute(f"SELECT * FROM {table_name}").fetchdf()
+        conn.close()
+        return df
+    except:
+        return pd.DataFrame()
+
+def combine_with_existing(new_df, existing_df, dedup_column=None):
+    """Combine new data with existing, optionally deduplicating"""
+    if existing_df.empty:
+        return new_df
+    if new_df.empty:
+        return existing_df
+
+    combined = pd.concat([existing_df, new_df], ignore_index=True)
+
+    if dedup_column and dedup_column in combined.columns:
+        before = len(combined)
+        combined = combined.drop_duplicates(subset=[dedup_column], keep='last')
+        # print(f"      Dedup: {before} -> {len(combined)} records")
+
+    return combined
 
 # Column name mappings (Thai to English)
 ORDER_COLUMN_MAP = {
@@ -584,11 +675,35 @@ def load_tiktok_video():
     return combined
 
 
-def load_tiktok_orders():
-    """Load and combine all TikTok order files"""
+def load_tiktok_orders(manifest=None, incremental=False):
+    """Load TikTok order files with optional incremental mode"""
     print("\n📦 Loading TikTok Order Data...")
+
+    if manifest is None:
+        manifest = {}
+
+    # Get files to process
     all_orders = []
     files = get_all_files(TIKTOK_ORDERS_DIR, 'csv')
+
+    if incremental:
+        # Check which files need processing
+        to_process = []
+        skipped = 0
+        for file in files:
+            file_key = f"tiktok_orders:{file.name}"
+            signature = get_file_signature(file)
+
+            if file_key in manifest and manifest[file_key]['signature'] == signature:
+                skipped += 1
+                continue  # Skip unchanged file
+
+            to_process.append(file)
+
+        if skipped > 0:
+            print(f"   Skipped {skipped} unchanged files (incremental mode)")
+
+        files = to_process
 
     for file in files:
         try:
@@ -597,14 +712,29 @@ def load_tiktok_orders():
             df['File_Source'] = file.name
             all_orders.append(df)
             print(f"   ✓ {file.name}: {len(df)} records")
+
+            # Update manifest
+            if incremental:
+                update_manifest_entry(manifest, file, 'tiktok_orders', len(df))
+
         except Exception as e:
             print(f"   ✗ Error loading {file.name}: {e}")
 
     if not all_orders:
+        if incremental:
+            print("   No new files to process")
         return pd.DataFrame()
 
     combined = pd.concat(all_orders, ignore_index=True)
-    print(f"   Total: {len(combined)} TikTok order records")
+    print(f"   Total loaded: {len(combined)} TikTok order records")
+
+    # Deduplicate by Order_ID - keep the most recent file's data
+    if 'Order ID' in combined.columns:
+        before_dedup = len(combined)
+        combined = combined.drop_duplicates(subset=['Order ID'], keep='last')
+        duplicates_removed = before_dedup - len(combined)
+        print(f"   Deduplicated: {len(combined)} unique orders ({duplicates_removed:,} duplicates removed)")
+
     return combined
 
 
@@ -1763,5 +1893,156 @@ def run_pipeline():
     }
 
 
+def run_pipeline_incremental():
+    """
+    Incremental pipeline - only processes new/modified files.
+    Loads existing data from DuckDB and combines with new data.
+    """
+    print("=" * 60)
+    print("🚀 INCREMENTAL DATA PIPELINE")
+    print("=" * 60)
+    print(f"Started at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+
+    # Load manifest
+    manifest = load_manifest()
+    initial_manifest_count = len(manifest)
+
+    db_path = OUTPUT_DIR / "shopee_dashboard.duckdb"
+
+    # ===== TIKTOK ORDERS (Biggest data - most benefit from incremental) =====
+    print("\n📦 Checking TikTok Orders for new files...")
+    tiktok_orders_new = load_tiktok_orders(manifest, incremental=True)
+
+    if not tiktok_orders_new.empty:
+        # Load existing from DuckDB
+        print("   Loading existing TikTok orders from database...")
+        existing_tiktok = get_existing_data_from_duckdb('tiktok_orders')
+
+        # Combine and deduplicate
+        if not existing_tiktok.empty:
+            # Combine raw data before cleaning
+            print(f"   Existing: {len(existing_tiktok):,} records, New: {len(tiktok_orders_new):,} records")
+
+        # Clean new data
+        tiktok_orders_clean = clean_tiktok_orders(tiktok_orders_new)
+
+        # Combine with existing cleaned data
+        if not existing_tiktok.empty:
+            combined_tiktok = pd.concat([existing_tiktok, tiktok_orders_clean], ignore_index=True)
+            if 'Order_ID' in combined_tiktok.columns:
+                before = len(combined_tiktok)
+                combined_tiktok = combined_tiktok.drop_duplicates(subset=['Order_ID'], keep='last')
+                print(f"   Combined & deduplicated: {before:,} -> {len(combined_tiktok):,} records")
+            tiktok_orders_clean = combined_tiktok
+    else:
+        # No new data, load existing
+        tiktok_orders_clean = get_existing_data_from_duckdb('tiktok_orders')
+        if tiktok_orders_clean.empty:
+            print("   No TikTok order data available, running full load...")
+            tiktok_orders_raw = load_tiktok_orders(manifest, incremental=False)
+            tiktok_orders_clean = clean_tiktok_orders(tiktok_orders_raw)
+
+    # ===== SHOPEE ORDERS =====
+    print("\n📦 Loading Shopee Orders...")
+    orders_raw = load_orders()
+    orders_clean = clean_orders(orders_raw)
+
+    # ===== OTHER DATA SOURCES (usually smaller, process normally) =====
+    ads_raw = load_ads()
+    live_raw = load_live()
+    video_raw = load_video()
+    tiktok_live_raw = load_tiktok_live()
+    tiktok_video_raw = load_tiktok_video()
+    line_orders_raw = load_line_orders()
+
+    ads_clean = clean_ads(ads_raw)
+    live_clean = clean_live(live_raw)
+    video_clean = clean_video(video_raw)
+    tiktok_live_clean = clean_tiktok_live(tiktok_live_raw)
+    tiktok_video_clean = clean_tiktok_video(tiktok_video_raw)
+    line_orders_clean = clean_line_orders(line_orders_raw)
+
+    # ===== COMBINE ALL ORDERS =====
+    all_orders_list = [orders_clean, tiktok_orders_clean]
+    if not line_orders_clean.empty:
+        all_orders_list.append(line_orders_clean)
+    combined_orders = pd.concat([df for df in all_orders_list if not df.empty], ignore_index=True)
+
+    # ===== CREATE MASTER DATASETS =====
+    daily_master = create_daily_sales_master(combined_orders)
+    product_master = create_product_master(combined_orders)
+    ads_master = create_ads_master(ads_clean)
+    geo_master = create_geographic_master(combined_orders)
+    daily_geo_master = create_daily_geographic(combined_orders)
+
+    # ===== UPDATE DATABASE =====
+    db_path = create_duckdb_database(
+        daily_master, product_master, ads_master, geo_master, orders_clean,
+        live_clean, video_clean, daily_geo_master,
+        tiktok_live_clean, tiktok_video_clean, tiktok_orders_clean, line_orders_clean
+    )
+
+    # ===== EXPORT CSVs =====
+    print("\n💾 Exporting Master Files...")
+    if not daily_master.empty:
+        daily_master.to_csv(OUTPUT_DIR / "Master_Daily_Sales.csv", index=False, encoding='utf-8-sig')
+        print("   ✓ Master_Daily_Sales.csv")
+    if not product_master.empty:
+        product_master.to_csv(OUTPUT_DIR / "Master_Product_Sales.csv", index=False, encoding='utf-8-sig')
+        print("   ✓ Master_Product_Sales.csv")
+    if not tiktok_orders_clean.empty:
+        tiktok_orders_clean.to_csv(OUTPUT_DIR / "Combined_TikTok_Orders.csv", index=False, encoding='utf-8-sig')
+        print("   ✓ Combined_TikTok_Orders.csv")
+
+    # ===== SAVE MANIFEST =====
+    new_files_processed = len(manifest) - initial_manifest_count
+    save_manifest(manifest)
+    print(f"\n📋 Manifest updated: {new_files_processed} new files processed")
+
+    # ===== SUMMARY =====
+    print("\n" + "=" * 60)
+    print("📊 DATA SUMMARY")
+    print("=" * 60)
+
+    if not daily_master.empty:
+        print(f"Date Range: {daily_master['Date'].min()} to {daily_master['Date'].max()}")
+        print(f"Total GMV: ฿{daily_master['GMV'].sum():,.2f}")
+        print(f"Total Orders: {daily_master['Orders'].sum():,.0f}")
+
+    if not tiktok_orders_clean.empty:
+        print(f"\n📦 TikTok Orders: {len(tiktok_orders_clean):,} records")
+        print(f"   Total GMV: ฿{tiktok_orders_clean['Net_Sales'].sum():,.2f}")
+
+    print("\n" + "=" * 60)
+    print(f"✅ Incremental pipeline completed at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    print("=" * 60)
+
+    return {
+        'daily': daily_master,
+        'products': product_master,
+        'tiktok_orders': tiktok_orders_clean,
+        'db_path': db_path,
+        'new_files': new_files_processed
+    }
+
+
 if __name__ == "__main__":
-    results = run_pipeline()
+    import argparse
+
+    parser = argparse.ArgumentParser(description='E-Commerce Data Pipeline')
+    parser.add_argument('--incremental', action='store_true',
+                        help='Run in incremental mode (only process new files)')
+    parser.add_argument('--full', action='store_true',
+                        help='Run full pipeline (process all files)')
+
+    args = parser.parse_args()
+
+    if args.incremental:
+        results = run_pipeline_incremental()
+    else:
+        # Default to incremental mode, use --full for complete reload
+        if not args.full:
+            print("Running in incremental mode (use --full for complete reload)\n")
+            results = run_pipeline_incremental()
+        else:
+            results = run_pipeline()

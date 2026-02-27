@@ -14,8 +14,7 @@ build/
 # Data files (can be regenerated or contain sensitive business data)
 *.xlsx
 *.csv
-processed_data/*.duckdb
-processed_data/*.csv
+processed_data/
 
 # Source data folders
 Shopee*/
