@@ -1082,5 +1082,189 @@ with tab5:
         else:
             st.info("Need more than 1 month of data for MoM comparison")
 
+        # ==========================================
+        # AOV ANALYSIS
+        # ==========================================
+        st.markdown("---")
+        st.markdown("### 💰 Average Order Value (AOV) Analysis")
+
+        # Calculate AOV
+        daily_agg['AOV'] = daily_agg.apply(
+            lambda x: x['GMV'] / x['Orders'] if x['Orders'] > 0 else 0, axis=1
+        )
+
+        col1, col2, col3, col4 = st.columns(4)
+        with col1:
+            avg_aov = daily_agg['AOV'].mean()
+            st.metric("Average AOV", format_currency(avg_aov))
+        with col2:
+            median_aov = daily_agg['AOV'].median()
+            st.metric("Median AOV", format_currency(median_aov))
+        with col3:
+            max_aov = daily_agg['AOV'].max()
+            st.metric("Max AOV", format_currency(max_aov))
+        with col4:
+            min_aov = daily_agg[daily_agg['AOV'] > 0]['AOV'].min()
+            st.metric("Min AOV", format_currency(min_aov))
+
+        # AOV trend over time
+        col1, col2 = st.columns(2)
+
+        with col1:
+            fig = go.Figure()
+            fig.add_trace(go.Scatter(
+                x=daily_agg['Date'],
+                y=daily_agg['AOV'],
+                mode='lines+markers',
+                name='Daily AOV',
+                line=dict(color='#9c27b0', width=1),
+                marker=dict(size=4)
+            ))
+
+            # Rolling average
+            daily_agg['AOV_Rolling'] = daily_agg['AOV'].rolling(window=7, min_periods=1).mean()
+            fig.add_trace(go.Scatter(
+                x=daily_agg['Date'],
+                y=daily_agg['AOV_Rolling'],
+                mode='lines',
+                name='7-Day Avg',
+                line=dict(color='#ee4d2d', width=2)
+            ))
+
+            fig.add_hline(y=avg_aov, line_dash="dash", line_color="#28a745",
+                         annotation_text=f"Avg: {format_currency(avg_aov)}")
+
+            fig.update_layout(
+                title="AOV Trend Over Time",
+                height=350,
+                hovermode='x unified'
+            )
+            st.plotly_chart(fig, use_container_width=True)
+
+        with col2:
+            # AOV distribution
+            fig = go.Figure(go.Histogram(
+                x=daily_agg[daily_agg['AOV'] > 0]['AOV'],
+                nbinsx=30,
+                marker_color='#9c27b0',
+                opacity=0.7
+            ))
+            fig.add_vline(x=avg_aov, line_dash="dash", line_color="#28a745",
+                         annotation_text=f"Mean: {format_currency(avg_aov)}")
+            fig.add_vline(x=median_aov, line_dash="dot", line_color="#0066cc",
+                         annotation_text=f"Median: {format_currency(median_aov)}")
+            fig.update_layout(
+                title="AOV Distribution",
+                xaxis_title="AOV (฿)",
+                height=350
+            )
+            st.plotly_chart(fig, use_container_width=True)
+
+        # AOV by day of week
+        st.markdown("#### AOV by Day of Week")
+        dow_aov = daily_agg.groupby('DayOfWeek')['AOV'].mean()
+        dow_aov.index = dow_names
+
+        fig = go.Figure(go.Bar(
+            x=dow_aov.index,
+            y=dow_aov.values,
+            marker_color=['#28a745' if v == dow_aov.max() else '#9c27b0' for v in dow_aov.values],
+            text=[format_currency(v) for v in dow_aov.values],
+            textposition='outside'
+        ))
+        fig.add_hline(y=avg_aov, line_dash="dash", line_color="#666666")
+        fig.update_layout(
+            title="Average AOV by Day of Week",
+            height=300,
+            showlegend=False
+        )
+        st.plotly_chart(fig, use_container_width=True)
+
+        # ==========================================
+        # TIME-BASED INSIGHTS
+        # ==========================================
+        st.markdown("---")
+        st.markdown("### ⏰ Time-Based Insights")
+
+        col1, col2 = st.columns(2)
+
+        with col1:
+            # Best performing days
+            st.markdown("#### 🏆 Top 10 Best Days by GMV")
+            top_days = daily_agg.nlargest(10, 'GMV')[['Date', 'GMV', 'Orders', 'AOV']].copy()
+            top_days['Date'] = pd.to_datetime(top_days['Date']).dt.strftime('%Y-%m-%d (%a)')
+            top_days['GMV'] = top_days['GMV'].apply(format_currency)
+            top_days['AOV'] = top_days['AOV'].apply(format_currency)
+            top_days.columns = ['Date', 'GMV', 'Orders', 'AOV']
+            st.dataframe(top_days, use_container_width=True, hide_index=True)
+
+        with col2:
+            # Best performing days by AOV
+            st.markdown("#### 💎 Top 10 Best Days by AOV")
+            top_aov = daily_agg[daily_agg['Orders'] >= 5].nlargest(10, 'AOV')[['Date', 'AOV', 'GMV', 'Orders']].copy()
+            top_aov['Date'] = pd.to_datetime(top_aov['Date']).dt.strftime('%Y-%m-%d (%a)')
+            top_aov['GMV'] = top_aov['GMV'].apply(format_currency)
+            top_aov['AOV'] = top_aov['AOV'].apply(format_currency)
+            top_aov.columns = ['Date', 'AOV', 'GMV', 'Orders']
+            st.dataframe(top_aov, use_container_width=True, hide_index=True)
+
+        # Monthly AOV trend
+        st.markdown("#### 📊 Monthly AOV Trend")
+        monthly_aov = daily_agg.groupby(daily_agg['Date'].dt.to_period('M')).agg({
+            'GMV': 'sum',
+            'Orders': 'sum',
+            'AOV': 'mean'
+        }).reset_index()
+        monthly_aov['Date'] = monthly_aov['Date'].astype(str)
+        monthly_aov['Calculated_AOV'] = monthly_aov['GMV'] / monthly_aov['Orders']
+
+        fig = make_subplots(specs=[[{"secondary_y": True}]])
+
+        fig.add_trace(go.Bar(
+            x=monthly_aov['Date'],
+            y=monthly_aov['GMV'],
+            name='GMV',
+            marker_color='#ee4d2d',
+            opacity=0.7
+        ), secondary_y=False)
+
+        fig.add_trace(go.Scatter(
+            x=monthly_aov['Date'],
+            y=monthly_aov['Calculated_AOV'],
+            name='AOV',
+            mode='lines+markers',
+            line=dict(color='#9c27b0', width=3),
+            marker=dict(size=10)
+        ), secondary_y=True)
+
+        fig.update_layout(
+            title="Monthly GMV & AOV Trend",
+            height=350,
+            hovermode='x unified'
+        )
+        fig.update_yaxes(title_text="GMV (฿)", secondary_y=False)
+        fig.update_yaxes(title_text="AOV (฿)", secondary_y=True)
+
+        st.plotly_chart(fig, use_container_width=True)
+
+        # Key insights summary
+        st.markdown("---")
+        st.markdown("### 📋 Key Insights Summary")
+
+        best_dow = dow_aov.idxmax()
+        best_dow_gmv = dow_avg.idxmax()
+        aov_trend = "📈 Increasing" if daily_agg['AOV_Rolling'].iloc[-1] > daily_agg['AOV_Rolling'].iloc[0] else "📉 Decreasing"
+
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.metric("Best Day for GMV", best_dow_gmv)
+            st.caption(f"Avg: {format_currency(dow_avg[best_dow_gmv])}")
+        with col2:
+            st.metric("Best Day for AOV", best_dow)
+            st.caption(f"Avg: {format_currency(dow_aov[best_dow])}")
+        with col3:
+            st.metric("AOV Trend", aov_trend)
+            st.caption(f"Current: {format_currency(daily_agg['AOV_Rolling'].iloc[-1])}")
+
     else:
         st.info(f"Need at least 30 days of data for seasonality analysis. Current: {len(daily_gmv) if not daily_gmv.empty else 0} days")
