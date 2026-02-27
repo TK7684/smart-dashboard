@@ -1121,19 +1121,23 @@ def clean_tiktok_video(df):
                     'Product_Impressions', 'Product_Clicks', 'V_to_L_Clicks', 'Items_Sold',
                     'Commission', 'Fixed_Fee', 'Avg_Order_Value', 'Refund_Items', 'Refund_GMV']
 
+    def safe_convert(x):
+        try:
+            if pd.isna(x):
+                return 0.0
+            if isinstance(x, (int, float)):
+                return float(x)
+            return parse_thai_currency(x)
+        except:
+            return 0.0
+
     for col in numeric_cols:
         if col in df.columns:
-            # Convert each value safely
-            def safe_convert(x):
-                try:
-                    if pd.isna(x):
-                        return 0.0
-                    if isinstance(x, (int, float)):
-                        return float(x)
-                    return parse_thai_currency(x)
-                except:
-                    return 0.0
-            df[col] = df[col].apply(safe_convert)
+            # Handle potential duplicate columns
+            col_data = df[col]
+            if isinstance(col_data, pd.DataFrame):
+                col_data = col_data.iloc[:, 0]
+            df[col] = col_data.apply(safe_convert)
         else:
             df[col] = 0
 
