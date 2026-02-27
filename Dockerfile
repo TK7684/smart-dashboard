@@ -15,6 +15,9 @@ COPY data_pipeline.py .
 COPY dashboard.py .
 COPY utils.py .
 
+# Copy analytics modules
+COPY analytics /app/analytics
+
 # Copy pages directory for multipage app
 COPY pages /app/pages
 
