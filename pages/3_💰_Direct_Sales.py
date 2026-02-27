@@ -103,15 +103,6 @@ with st.sidebar:
 
     st.markdown("---")
 
-    # Navigation
-    st.markdown("📌 **Navigation**")
-    st.page_link("dashboard.py", label="📊 Main Dashboard", icon="📊")
-    st.page_link("pages/1_🎬_Content_Commerce.py", label="🎬 Content Commerce", icon="🎬")
-    st.page_link("pages/2_📈_Analytics.py", label="📈 Analytics", icon="📈")
-    st.page_link("pages/3_💰_Direct_Sales.py", label="💰 Direct Sales", icon="💰")
-
-    st.markdown("---")
-
     if st.button("🔄 Refresh Data", use_container_width=True):
         st.cache_data.clear()
         st.rerun()

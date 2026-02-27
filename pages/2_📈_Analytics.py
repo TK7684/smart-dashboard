@@ -173,46 +173,50 @@ def prepare_session_data_for_platform(tiktok_live, tiktok_orders, shopee_daily, 
 # SIDEBAR
 # ==========================================
 with st.sidebar:
-    st.markdown("### 📈 Analytics & Prediction")
-    st.markdown("---")
-
     # Load data for date range
     daily_df = load_daily_sales()
     min_date = pd.to_datetime(daily_df['Date']).min().date()
     max_date = pd.to_datetime(daily_df['Date']).max().date()
 
+    # Platform selection (most important - at top)
+    st.markdown("### 🔧 Platform")
+    analysis_type = st.selectbox(
+        "Select platform",
+        options=["TikTok Content", "Shopee Sales", "Combined Overview"],
+        index=0,
+        label_visibility="collapsed"
+    )
+
+    st.markdown("---")
+
     # Quick time range
-    st.markdown("#### ⚡ Quick Select")
-    col1, col2, col3 = st.columns(3)
+    st.markdown("### ⚡ Time Range")
+    col1, col2 = st.columns(2)
 
     with col1:
-        if st.button("Last 7 Days", use_container_width=True):
+        if st.button("7 Days", use_container_width=True):
             st.session_state.date_range = (max_date - timedelta(days=7), max_date)
             st.rerun()
-        if st.button("Last 30 Days", use_container_width=True):
-            st.session_state.date_range = (max_date - timedelta(days=30), max_date)
+        if st.button("90 Days", use_container_width=True):
+            st.session_state.date_range = (max_date - timedelta(days=90), max_date)
+            st.rerun()
+        if st.button("This Year", use_container_width=True):
+            st.session_state.date_range = (datetime(max_date.year, 1, 1).date(), max_date)
             st.rerun()
 
     with col2:
-        if st.button("Last 90 Days", use_container_width=True):
-            st.session_state.date_range = (max_date - timedelta(days=90), max_date)
+        if st.button("30 Days", use_container_width=True):
+            st.session_state.date_range = (max_date - timedelta(days=30), max_date)
             st.rerun()
-        if st.button("Last 12 Months", use_container_width=True):
+        if st.button("12 Months", use_container_width=True):
             st.session_state.date_range = (max_date - timedelta(days=365), max_date)
-            st.rerun()
-
-    with col3:
-        if st.button("This Year", use_container_width=True):
-            st.session_state.date_range = (datetime(max_date.year, 1, 1).date(), max_date)
             st.rerun()
         if st.button("All Time", use_container_width=True, type="primary"):
             st.session_state.date_range = (min_date, max_date)
             st.rerun()
 
-    st.markdown("---")
-
     # Custom date range
-    st.markdown("#### 📅 Custom Range")
+    st.markdown("**📅 Custom Range**")
     default_start = st.session_state.get('date_range', (max_date - timedelta(days=90), max_date))[0]
     default_end = st.session_state.get('date_range', (max_date - timedelta(days=90), max_date))[1]
 
@@ -226,25 +230,10 @@ with st.sidebar:
 
     st.markdown("---")
 
-    # Analysis type
-    st.markdown("#### 🔧 Analysis Settings")
-    analysis_type = st.selectbox(
-        "Platform Focus",
-        options=["TikTok Content", "Shopee Sales", "Combined Overview"],
-        index=0
-    )
+    # Data info
+    st.caption(f"📊 Data: {min_date} to {max_date}")
 
-    st.markdown("---")
-
-    # Navigation
-    st.markdown("📌 **Navigation**")
-    st.page_link("dashboard.py", label="📊 Main Dashboard", icon="📊")
-    st.page_link("pages/1_🎬_Content_Commerce.py", label="🎬 Content Commerce", icon="🎬")
-    st.page_link("pages/2_📈_Analytics.py", label="📈 Analytics", icon="📈")
-
-    st.markdown("---")
-
-    if st.button("🔄 Refresh Data", use_container_width=True):
+    if st.button("🔄 Refresh", use_container_width=True):
         st.cache_data.clear()
         st.rerun()
 

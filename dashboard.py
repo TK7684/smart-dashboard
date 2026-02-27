@@ -421,13 +421,6 @@ with st.sidebar:
         st.cache_data.clear()
         st.rerun()
 
-    st.markdown("---")
-
-    # Navigation
-    st.markdown("#### 📌 Pages")
-    st.page_link("dashboard.py", label="📊 Main Dashboard", icon="📊")
-    st.page_link("pages/1_🎬_Content_Commerce.py", label="🎬 Content Commerce", icon="🎬")
-
 # ==========================================
 # FILTER DATA BY DATE RANGE AND PLATFORM
 # ==========================================
