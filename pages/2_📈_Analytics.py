@@ -312,11 +312,12 @@ PLATFORM_COLORS = {
 # ==========================================
 # TABS
 # ==========================================
-tab1, tab2, tab3, tab4 = st.tabs([
+tab1, tab2, tab3, tab4, tab5 = st.tabs([
     "📊 Correlation Analysis",
     "🔮 Sales Forecasting",
     "🎯 Performance Prediction",
-    "📋 Feature Importance"
+    "📋 Feature Importance",
+    "🌡️ Seasonality & Anomalies"
 ])
 
 # ==========================================
@@ -798,3 +799,288 @@ with tab4:
             st.error("scikit-learn required")
         else:
             st.info(f"No data available for {analysis_type}")
+
+# ==========================================
+# TAB 5: SEASONALITY & ANOMALIES
+# ==========================================
+with tab5:
+    st.markdown("## 🌡️ Seasonality & Anomaly Detection")
+    st.markdown(f"Identify patterns and unusual sales days - **{analysis_type}**")
+
+    if not daily_gmv.empty and len(daily_gmv) >= 30:
+        # Aggregate by date if multiple platforms
+        if 'Platform' in daily_gmv.columns and analysis_type == "Combined Overview":
+            daily_agg = daily_gmv.groupby('Date').agg({
+                'GMV': 'sum',
+                'Orders': 'sum'
+            }).reset_index()
+        else:
+            daily_agg = daily_gmv[['Date', 'GMV', 'Orders']].copy()
+
+        daily_agg = daily_agg.sort_values('Date').reset_index(drop=True)
+
+        # ==========================================
+        # SEASONALITY ANALYSIS
+        # ==========================================
+        st.markdown("### 📅 Thai E-Commerce Seasonality")
+
+        # Add day-of-week and day-of-month analysis
+        daily_agg['DayOfWeek'] = pd.to_datetime(daily_agg['Date']).dt.dayofweek
+        daily_agg['DayOfMonth'] = pd.to_datetime(daily_agg['Date']).dt.day
+        daily_agg['Month'] = pd.to_datetime(daily_agg['Date']).dt.month
+        daily_agg['WeekOfYear'] = pd.to_datetime(daily_agg['Date']).dt.isocalendar().week
+
+        col1, col2 = st.columns(2)
+
+        with col1:
+            # Day of Week pattern
+            dow_names = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
+            dow_avg = daily_agg.groupby('DayOfWeek')['GMV'].mean()
+            dow_avg.index = dow_names
+
+            fig = go.Figure(go.Bar(
+                x=dow_avg.index,
+                y=dow_avg.values,
+                marker_color=['#ee4d2d' if v == dow_avg.max() else '#666666' for v in dow_avg.values],
+                text=[format_currency(v) for v in dow_avg.values],
+                textposition='outside'
+            ))
+            fig.update_layout(
+                title="Average GMV by Day of Week",
+                height=300,
+                showlegend=False
+            )
+            st.plotly_chart(fig, use_container_width=True)
+
+        with col2:
+            # Day of Month pattern (Payday effect)
+            # Thai paydays are typically 1st and 15th
+            dom_avg = daily_agg.groupby('DayOfMonth')['GMV'].mean()
+
+            # Highlight payday days
+            colors = ['#28a745' if d in [1, 2, 15, 16, 25, 26] else '#666666' for d in dom_avg.index]
+
+            fig = go.Figure(go.Bar(
+                x=dom_avg.index,
+                y=dom_avg.values,
+                marker_color=colors
+            ))
+            fig.update_layout(
+                title="Average GMV by Day of Month (Green = Payday)",
+                height=300,
+                showlegend=False,
+                xaxis=dict(dtick=5)
+            )
+            st.plotly_chart(fig, use_container_width=True)
+
+        # ==========================================
+        # DOUBLE DAY ANALYSIS (Thai E-Commerce Events)
+        # ==========================================
+        st.markdown("---")
+        st.markdown("### 🎉 Double Day Campaign Performance")
+
+        # Thai double days: 1.1, 2.2, 3.3, 4.4, etc. + major sales
+        double_days = {
+            '1.1': (1, 1), '2.2': (2, 2), '3.3': (3, 3), '4.4': (4, 4),
+            '5.5': (5, 5), '6.6': (6, 6), '7.7': (7, 7), '8.8': (8, 8),
+            '9.9': (9, 9), '10.10': (10, 10), '11.11': (11, 11), '12.12': (12, 12),
+            'Mega 9.9': (9, 9), 'Mega 10.10': (10, 10), 'Mega 11.11': (11, 11), 'Mega 12.12': (12, 12),
+        }
+
+        # Find double days in the data
+        double_day_data = []
+        for name, (month, day) in double_days.items():
+            mask = (daily_agg['Month'] == month) & (daily_agg['DayOfMonth'] == day)
+            if mask.any():
+                dd_data = daily_agg[mask]
+                for _, row in dd_data.iterrows():
+                    double_day_data.append({
+                        'Campaign': name,
+                        'Date': row['Date'],
+                        'GMV': row['GMV'],
+                        'Orders': row['Orders']
+                    })
+
+        if double_day_data:
+            dd_df = pd.DataFrame(double_day_data)
+
+            # Compare to average
+            avg_gmv = daily_agg['GMV'].mean()
+            dd_df['vs_Avg'] = ((dd_df['GMV'] - avg_gmv) / avg_gmv * 100).round(1)
+
+            # Sort by date
+            dd_df = dd_df.sort_values('Date', ascending=False)
+
+            # Display
+            fig = go.Figure()
+            fig.add_trace(go.Bar(
+                x=dd_df['Campaign'],
+                y=dd_df['GMV'],
+                marker_color=['#28a745' if v > 0 else '#dc3545' for v in dd_df['vs_Avg']],
+                text=[f"{v:+.0f}%" for v in dd_df['vs_Avg']],
+                textposition='outside'
+            ))
+            fig.add_hline(y=avg_gmv, line_dash="dash", line_color="#666666",
+                         annotation_text=f"Average: {format_currency(avg_gmv)}")
+            fig.update_layout(
+                title="Double Day GMV vs Average",
+                height=350,
+                showlegend=False
+            )
+            st.plotly_chart(fig, use_container_width=True)
+
+            # Table
+            dd_display = dd_df.copy()
+            dd_display['GMV'] = dd_display['GMV'].apply(format_currency)
+            dd_display['vs_Avg'] = dd_display['vs_Avg'].apply(lambda x: f"{x:+.1f}%")
+            dd_display['Date'] = pd.to_datetime(dd_display['Date']).dt.strftime('%Y-%m-%d')
+            st.dataframe(dd_display[['Campaign', 'Date', 'GMV', 'vs_Avg']], use_container_width=True, hide_index=True)
+        else:
+            st.info("No double day campaigns found in the selected date range")
+
+        # ==========================================
+        # ANOMALY DETECTION
+        # ==========================================
+        st.markdown("---")
+        st.markdown("### 🚨 Anomaly Detection")
+
+        # Calculate rolling statistics
+        window = 7
+        daily_agg['Rolling_Mean'] = daily_agg['GMV'].rolling(window=window, min_periods=1).mean()
+        daily_agg['Rolling_Std'] = daily_agg['GMV'].rolling(window=window, min_periods=1).std()
+
+        # Z-score based anomaly detection
+        daily_agg['Z_Score'] = (daily_agg['GMV'] - daily_agg['Rolling_Mean']) / daily_agg['Rolling_Std'].replace(0, 1)
+        daily_agg['Is_Anomaly'] = daily_agg['Z_Score'].abs() > 2
+
+        # Plot with anomalies highlighted
+        fig = go.Figure()
+
+        # Normal days
+        normal = daily_agg[~daily_agg['Is_Anomaly']]
+        fig.add_trace(go.Scatter(
+            x=normal['Date'],
+            y=normal['GMV'],
+            mode='lines+markers',
+            name='Normal',
+            line=dict(color='#666666', width=1),
+            marker=dict(size=4)
+        ))
+
+        # High anomalies
+        high_anomaly = daily_agg[(daily_agg['Is_Anomaly']) & (daily_agg['Z_Score'] > 0)]
+        if not high_anomaly.empty:
+            fig.add_trace(go.Scatter(
+                x=high_anomaly['Date'],
+                y=high_anomaly['GMV'],
+                mode='markers',
+                name='Unusually High',
+                marker=dict(color='#28a745', size=12, symbol='star')
+            ))
+
+        # Low anomalies
+        low_anomaly = daily_agg[(daily_agg['Is_Anomaly']) & (daily_agg['Z_Score'] < 0)]
+        if not low_anomaly.empty:
+            fig.add_trace(go.Scatter(
+                x=low_anomaly['Date'],
+                y=low_anomaly['GMV'],
+                mode='markers',
+                name='Unusually Low',
+                marker=dict(color='#dc3545', size=12, symbol='x')
+            ))
+
+        # Rolling average
+        fig.add_trace(go.Scatter(
+            x=daily_agg['Date'],
+            y=daily_agg['Rolling_Mean'],
+            mode='lines',
+            name='7-Day Average',
+            line=dict(color='#0066cc', width=2, dash='dot')
+        ))
+
+        fig.update_layout(
+            title="GMV with Anomaly Detection (Z-Score > 2)",
+            xaxis_title="Date",
+            yaxis_title="GMV (฿)",
+            height=400,
+            hovermode='x unified'
+        )
+        st.plotly_chart(fig, use_container_width=True)
+
+        # Anomaly summary
+        anomalies = daily_agg[daily_agg['Is_Anomaly']].copy()
+        if not anomalies.empty:
+            col1, col2 = st.columns(2)
+
+            with col1:
+                st.markdown("#### 📈 High GMV Days (Opportunities)")
+                high = anomalies[anomalies['Z_Score'] > 0].sort_values('GMV', ascending=False)
+                if not high.empty:
+                    for _, row in high.head(5).iterrows():
+                        date_str = pd.to_datetime(row['Date']).strftime('%Y-%m-%d')
+                        st.write(f"• **{date_str}**: {format_currency(row['GMV'])} (+{row['Z_Score']:.1f}σ)")
+                else:
+                    st.write("No unusually high days detected")
+
+            with col2:
+                st.markdown("#### 📉 Low GMV Days (Investigate)")
+                low = anomalies[anomalies['Z_Score'] < 0].sort_values('GMV')
+                if not low.empty:
+                    for _, row in low.head(5).iterrows():
+                        date_str = pd.to_datetime(row['Date']).strftime('%Y-%m-%d')
+                        st.write(f"• **{date_str}**: {format_currency(row['GMV'])} ({row['Z_Score']:.1f}σ)")
+                else:
+                    st.write("No unusually low days detected")
+
+            st.markdown("---")
+            st.markdown(f"**Total Anomalies:** {len(anomalies)} out of {len(daily_agg)} days ({len(anomalies)/len(daily_agg)*100:.1f}%)")
+        else:
+            st.success("✅ No significant anomalies detected in the selected period")
+
+        # ==========================================
+        # MONTH-OVER-MONTH COMPARISON
+        # ==========================================
+        st.markdown("---")
+        st.markdown("### 📊 Month-over-Month Trend")
+
+        monthly_agg = daily_agg.groupby(daily_agg['Date'].dt.to_period('M')).agg({
+            'GMV': 'sum',
+            'Orders': 'sum'
+        }).reset_index()
+        monthly_agg['Date'] = monthly_agg['Date'].astype(str)
+
+        if len(monthly_agg) > 1:
+            monthly_agg['GMV_Growth'] = monthly_agg['GMV'].pct_change() * 100
+
+            fig = make_subplots(specs=[[{"secondary_y": True}]])
+
+            fig.add_trace(go.Bar(
+                x=monthly_agg['Date'],
+                y=monthly_agg['GMV'],
+                name='GMV',
+                marker_color='#ee4d2d'
+            ), secondary_y=False)
+
+            fig.add_trace(go.Scatter(
+                x=monthly_agg['Date'],
+                y=monthly_agg['GMV_Growth'],
+                name='Growth %',
+                mode='lines+markers',
+                line=dict(color='#28a745', width=2),
+                marker=dict(size=8)
+            ), secondary_y=True)
+
+            fig.update_layout(
+                title="Monthly GMV & Growth Rate",
+                height=350,
+                hovermode='x unified'
+            )
+            fig.update_yaxes(title_text="GMV (฿)", secondary_y=False)
+            fig.update_yaxes(title_text="Growth %", secondary_y=True)
+
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.info("Need more than 1 month of data for MoM comparison")
+
+    else:
+        st.info(f"Need at least 30 days of data for seasonality analysis. Current: {len(daily_gmv) if not daily_gmv.empty else 0} days")
