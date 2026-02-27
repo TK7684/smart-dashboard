@@ -23,6 +23,10 @@ from pathlib import Path
 import warnings
 import duckdb
 
+# Import analytics modules
+sys.path.insert(0, str(Path(__file__).parent))
+from analytics.rfm_analysis import create_rfm_segmentation, get_segment_summary
+
 # Fix encoding for Windows console
 if sys.platform == 'win32':
     sys.stdout.reconfigure(encoding='utf-8', errors='replace')
@@ -1575,11 +1579,67 @@ def create_daily_geographic(orders_df):
     return daily_geo
 
 
+def create_customer_rfm(orders_df):
+    """Create customer RFM segmentation from orders data"""
+    print("\n👥 Creating Customer RFM Segmentation...")
+
+    if orders_df.empty:
+        return pd.DataFrame(), pd.DataFrame()
+
+    # We need a customer identifier - use Buyer_Username if available
+    # For TikTok, use Buyer_Username if available, otherwise create a pseudo-ID
+    customer_col = None
+    for col in ['Buyer_Username', 'Customer_ID', 'Buyer']:
+        if col in orders_df.columns:
+            customer_col = col
+            break
+
+    if customer_col is None:
+        # Create pseudo customer ID from province + product combination
+        # This is less accurate but better than nothing
+        print("   Note: No customer ID column found, using order-level analysis")
+        return pd.DataFrame(), pd.DataFrame()
+
+    # Filter out orders without customer info
+    valid_orders = orders_df[orders_df[customer_col].notna() & (orders_df[customer_col] != '')].copy()
+
+    if valid_orders.empty:
+        print("   No valid customer data found")
+        return pd.DataFrame(), pd.DataFrame()
+
+    try:
+        # Create RFM segmentation
+        rfm_df = create_rfm_segmentation(
+            valid_orders,
+            customer_id_col=customer_col,
+            date_col='Order_Date',
+            revenue_col='Net_Sales',
+            order_id_col='Order_ID',
+            include_platform=False
+        )
+
+        # Rename customer column for consistency
+        rfm_df = rfm_df.rename(columns={customer_col: 'Customer_ID'})
+
+        # Get segment summary
+        segment_summary = get_segment_summary(rfm_df)
+
+        print(f"   Created RFM scores for {len(rfm_df):,} customers")
+        print(f"   Segments: {rfm_df['Segment'].nunique()} unique segments")
+
+        return rfm_df, segment_summary
+
+    except Exception as e:
+        print(f"   Warning: Could not create RFM segmentation: {e}")
+        return pd.DataFrame(), pd.DataFrame()
+
+
 # ==========================================
 # DUCKDB SQL FUNCTIONS
 # ==========================================
 def create_duckdb_database(daily_df, product_df, ads_df, geo_df, orders_df, live_df=None, video_df=None, daily_geo_df=None,
-                           tiktok_live_df=None, tiktok_video_df=None, tiktok_orders_df=None, line_orders_df=None):
+                           tiktok_live_df=None, tiktok_video_df=None, tiktok_orders_df=None, line_orders_df=None,
+                           rfm_df=None, segment_summary_df=None):
     """Create DuckDB database for fast SQL queries"""
     print("\n🗄️ Creating DuckDB Database...")
 
@@ -1649,6 +1709,16 @@ def create_duckdb_database(daily_df, product_df, ads_df, geo_df, orders_df, live
         line_orders_subset = line_orders_df[available_cols].copy()
         conn.execute("CREATE OR REPLACE TABLE line_orders AS SELECT * FROM line_orders_subset")
         print("   Added line_orders table")
+
+    # Add Customer RFM table
+    if rfm_df is not None and not rfm_df.empty:
+        conn.execute("CREATE OR REPLACE TABLE customer_rfm AS SELECT * FROM rfm_df")
+        print("   Added customer_rfm table")
+
+    # Add Segment Summary table
+    if segment_summary_df is not None and not segment_summary_df.empty:
+        conn.execute("CREATE OR REPLACE TABLE segment_summary AS SELECT * FROM segment_summary_df")
+        print("   Added segment_summary table")
 
     # Create useful views
     conn.execute("""
@@ -1759,11 +1829,15 @@ def run_pipeline():
     geo_master = create_geographic_master(combined_orders)
     daily_geo_master = create_daily_geographic(combined_orders)
 
+    # Create customer RFM segmentation
+    rfm_master, segment_summary = create_customer_rfm(combined_orders)
+
     # Create DuckDB database
     db_path = create_duckdb_database(
         daily_master, product_master, ads_master, geo_master, orders_clean,
         live_clean, video_clean, daily_geo_master,
-        tiktok_live_clean, tiktok_video_clean, tiktok_orders_clean, line_orders_clean
+        tiktok_live_clean, tiktok_video_clean, tiktok_orders_clean, line_orders_clean,
+        rfm_master, segment_summary
     )
 
     # Export to CSV for Looker Studio
@@ -1889,6 +1963,8 @@ def run_pipeline():
         'tiktok_video': tiktok_video_clean,
         'tiktok_orders': tiktok_orders_clean,
         'line_orders': line_orders_clean,
+        'rfm': rfm_master,
+        'segment_summary': segment_summary,
         'db_path': db_path
     }
 
@@ -1975,11 +2051,15 @@ def run_pipeline_incremental():
     geo_master = create_geographic_master(combined_orders)
     daily_geo_master = create_daily_geographic(combined_orders)
 
+    # Create customer RFM segmentation
+    rfm_master, segment_summary = create_customer_rfm(combined_orders)
+
     # ===== UPDATE DATABASE =====
     db_path = create_duckdb_database(
         daily_master, product_master, ads_master, geo_master, orders_clean,
         live_clean, video_clean, daily_geo_master,
-        tiktok_live_clean, tiktok_video_clean, tiktok_orders_clean, line_orders_clean
+        tiktok_live_clean, tiktok_video_clean, tiktok_orders_clean, line_orders_clean,
+        rfm_master, segment_summary
     )
 
     # ===== EXPORT CSVs =====
